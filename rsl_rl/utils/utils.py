@@ -221,6 +221,7 @@ def resolve_obs_groups(
         ValueError: If any observation set contains an observation term that is not present in the observations.
     """
     # Check if policy observation set exists
+    obs_groups = obs_groups[0]
     if "policy" not in obs_groups:
         if "policy" in obs:
             obs_groups["policy"] = ["policy"]
