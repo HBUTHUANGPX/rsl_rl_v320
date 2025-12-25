@@ -122,7 +122,8 @@ class Distillation:
                     kl_loss = self.policy.beta_kl * kl
 
                 # Total loss
-                loss = loss + behavior_loss + kl_loss
+                total_loss = behavior_loss + kl_loss
+                loss += total_loss
                 mean_behavior_loss += behavior_loss.item()
                 mean_kl_loss += kl_loss.item() if isinstance(kl_loss, torch.Tensor) else kl_loss
                 cnt += 1
@@ -134,7 +135,7 @@ class Distillation:
                     if self.is_multi_gpu:
                         self.reduce_parameters()
                     if self.max_grad_norm:
-                        nn.utils.clip_grad_norm_(self.policy.student.parameters(), self.max_grad_norm)
+                        nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)  # 修正：使用所有参数（兼容 CVAE）
                     self.optimizer.step()
                     self.policy.detach_hidden_states()
                     loss = 0

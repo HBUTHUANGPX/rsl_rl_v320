@@ -8,7 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
-from torch.distributions import Normal, kl_divergence
+from torch.distributions import Normal
 from typing import Any, NoReturn, Tuple
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState
@@ -49,7 +49,8 @@ class StudentTeacher_CVAE(nn.Module):
             activation: 激活函数。
             init_noise_std: 初始动作噪声标准差。
             noise_std_type: 噪声类型 ('scalar' 或 'log')。
-            normalize_mu: 是否对潜在均值 mu 进行经验规范化（更新：默认 True）。
+            normalize_mu: 是否对潜在均值 mu 进行经验规范化。
+            z_scale_factor: z 的缩放因子（默认 1.0）。
             kwargs: 忽略的额外参数。
         """
         if kwargs:
@@ -62,7 +63,8 @@ class StudentTeacher_CVAE(nn.Module):
         self.loaded_teacher = False  # 表示教师是否已加载
         self.latent_dim = latent_dim
         self.beta_kl = beta_kl  # KL 权重，用于训练
-        self.z_scale_factor = z_scale_factor  # 新增：z 缩放因子
+        self.z_scale_factor = z_scale_factor  # z 缩放因子
+
         # 获取观测维度
         self.obs_groups = obs_groups
         num_student_obs = 0
@@ -150,23 +152,23 @@ class StudentTeacher_CVAE(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def _reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """重参数化技巧采样潜在 z。
+        """重参数化技巧采样潜在 z，并应用缩放。
         
         Args:
             mu: 均值。
             logvar: log 方差。
         
         Returns:
-            采样 z。
+            采样 z = (mu + eps * std) * scale_factor。
         """
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
-        return (mu + eps * std) * self.z_scale_factor  # 应用缩放因子
+        return (mu + eps * std) * self.z_scale_factor
 
     def _compute_latent_dist(
         self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """计算潜在分布（后验或先验）。
+        """计算潜在分布（后验或先验），并返回 KL。
         
         Args:
             student_obs: 学生观测。
@@ -176,30 +178,34 @@ class StudentTeacher_CVAE(nn.Module):
         Returns:
             mu, logvar, z, kl (如果适用，否则 0)。
         """
-        # 先验
+        # 先验参数
         mu_p = self.prior_mu(student_obs)
         logvar_p = self.prior_logvar(student_obs).clamp(min=-10.0, max=2.0)
-        prior_dist = Normal(mu_p, torch.exp(0.5 * logvar_p))
 
         if use_prior_only:
             z = self._reparameterize(mu_p, logvar_p)
             kl = torch.zeros_like(mu_p.mean())  # 无 KL
             return mu_p, logvar_p, z, kl
 
-        # 编码器（残差 mu）
+        # 编码器残差参数
         mu_e = self.encoder_mu(teacher_obs)
         logvar_e = self.encoder_logvar(teacher_obs).clamp(min=-10.0, max=2.0)
-        mu = mu_p + mu_e  # 残差设计（论文指定）
-        mu = self.mu_normalizer(mu)  # 更新：规范化后验 mu
-        posterior_dist = Normal(mu, torch.exp(0.5 * logvar_e))
+
+        # 后验 mu（residual 设计）
+        mu = mu_p + mu_e
+        mu = self.mu_normalizer(mu)  # 规范化（如果启用）
+
+        # 计算 KL（使用作者显式公式，encoder_mu 为 total_mu）
+        kl = 0.5 * (
+            logvar_p - logvar_e + 
+            torch.exp(logvar_e) / torch.exp(logvar_p) + 
+            (mu - mu_p)**2 / torch.exp(logvar_p) - 1
+        ).sum(-1).mean()  # 修正：使用显式公式，确保数值稳定
 
         # 采样 z
         z = self._reparameterize(mu, logvar_e)
 
-        # 计算 KL
-        kl = kl_divergence(posterior_dist, prior_dist).mean()  # 平均 KL
-
-        return mu, logvar_e, z, kl  # 注意：返回后验的 mu 和 logvar_e
+        return mu, logvar_e, z, kl  # 返回后验参数
 
     def _update_distribution(self, student_obs: torch.Tensor, z: torch.Tensor) -> None:
         """更新动作分布。
@@ -245,9 +251,10 @@ class StudentTeacher_CVAE(nn.Module):
         
         Args:
             obs: 观测字典。
+            only_action: 如果 True，仅返回动作均值（用于部署）。
         
         Returns:
-            动作均值, KL 值（用于蒸馏损失）。
+            动作均值, KL 值（用于蒸馏损失，如果 only_action=False）。
         """
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
