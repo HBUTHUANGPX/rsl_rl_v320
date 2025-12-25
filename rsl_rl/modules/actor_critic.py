@@ -150,7 +150,7 @@ class ActorCritic(nn.Module):
         self._update_distribution(obs)
         return self.distribution.sample()
 
-    def act_inference(self, obs: TensorDict) -> torch.Tensor:
+    def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         if self.state_dependent_std:

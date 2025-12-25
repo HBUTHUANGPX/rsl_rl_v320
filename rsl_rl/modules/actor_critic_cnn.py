@@ -210,7 +210,7 @@ class ActorCriticCNN(ActorCritic):
         self._update_distribution(mlp_obs, cnn_obs)
         return self.distribution.sample()  # type: ignore
 
-    def act_inference(self, obs: TensorDict) -> torch.Tensor:
+    def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
         mlp_obs = self.actor_obs_normalizer(mlp_obs)
 

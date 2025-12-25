@@ -8,21 +8,12 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
-from torch.distributions import Normal
+from torch.distributions import Normal, kl_divergence
 from typing import Any, NoReturn, Tuple
 
 from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState
 
-
 class StudentTeacher_CVAE(nn.Module):
-    """
-    CVAE-based Student-Teacher 模块，基于论文第二阶段设计。
-    - Teacher: 标准 MLP，使用特权观测生成标签动作。
-    - Student (CVAE): 包括 encoder (后验，使用 teacher obs)、prior (先验，使用 policy obs)、decoder (使用 policy obs + latent 生成动作)。
-    - 在蒸馏训练中，使用重参数化采样后验 latent，计算重构损失 (MSE) 和 KL 损失。
-    - 在推理中，使用 prior 采样 latent。
-    """
-
     is_recurrent: bool = False
 
     def __init__(
@@ -30,29 +21,36 @@ class StudentTeacher_CVAE(nn.Module):
         obs: TensorDict,
         obs_groups: dict[str, list[str]],
         num_actions: int,
+        latent_dim: int = 64,  # CVAE 潜在维度（从配置传入）
+        beta_kl: float = 0.1,  # KL 损失权重（从配置传入）
         student_obs_normalization: bool = False,
         teacher_obs_normalization: bool = False,
-        encoder_hidden_dims: tuple[int] | list[int] = [256, 256, 256],  # Encoder 隐藏层
-        prior_hidden_dims: tuple[int] | list[int] = [256, 256, 256],  # Prior 隐藏层
-        decoder_hidden_dims: tuple[int] | list[int] = [256, 256, 256],  # Decoder 隐藏层
-        teacher_hidden_dims: tuple[int] | list[int] = [
-            256,
-            256,
-            256,
-        ],  # Teacher MLP 隐藏层
-        latent_dim: int = 8,  # 潜在维度
-        kl_weight: float = 1.0,  # KL 权重（在自定义损失中使用）
+        student_hidden_dims: tuple[int] | list[int] = [256, 256, 256],  # 用于 prior 和 decoder
+        teacher_hidden_dims: tuple[int] | list[int] = [256, 256, 256],  # 用于 teacher 和 encoder
         activation: str = "elu",
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
+        normalize_mu: bool = False,  # 新参数，从配置传入
+        z_scale_factor: float = 1.0,  # 新增：z 的缩放因子（默认 1.0，不缩放；从配置传入）
         **kwargs: dict[str, Any],
     ) -> None:
-        """
-        初始化 CVAE 组件。
-        - Encoder: 输入 num_teacher_obs，输出 2 * latent_dim (mu + logvar)。
-        - Prior: 输入 num_student_obs，输出 2 * latent_dim (mu + logvar)。
-        - Decoder: 输入 num_student_obs + latent_dim，输出 num_actions。
-        - Teacher: 与原类相同。
+        """初始化 CVAE-based 学生-教师模块。
+        
+        Args:
+            obs: 观测字典。
+            obs_groups: 观测组映射。
+            num_actions: 动作维度。
+            latent_dim: 潜在变量维度（论文推荐 64）。
+            beta_kl: KL 损失权重（论文推荐 0.1）。
+            student_obs_normalization: 是否规范化学生观测。
+            teacher_obs_normalization: 是否规范化教师观测。
+            student_hidden_dims: 先验和解码器的隐藏层维度。
+            teacher_hidden_dims: 编码器和教师的隐藏层维度。
+            activation: 激活函数。
+            init_noise_std: 初始动作噪声标准差。
+            noise_std_type: 噪声类型 ('scalar' 或 'log')。
+            normalize_mu: 是否对潜在均值 mu 进行经验规范化（更新：默认 True）。
+            kwargs: 忽略的额外参数。
         """
         if kwargs:
             print(
@@ -62,8 +60,9 @@ class StudentTeacher_CVAE(nn.Module):
         super().__init__()
 
         self.loaded_teacher = False  # 表示教师是否已加载
-        self.kl_weight = kl_weight  # KL 损失权重
-
+        self.latent_dim = latent_dim
+        self.beta_kl = beta_kl  # KL 权重，用于训练
+        self.z_scale_factor = z_scale_factor  # 新增：z 缩放因子
         # 获取观测维度
         self.obs_groups = obs_groups
         num_student_obs = 0
@@ -76,66 +75,64 @@ class StudentTeacher_CVAE(nn.Module):
             num_teacher_obs += obs[obs_group].shape[-1]
 
         # CVAE 组件
-        self.encoder = MLP(
-            num_teacher_obs, 2 * latent_dim, encoder_hidden_dims, activation
-        )  # 输出 mu + logvar
-        print(f"CVAE Encoder: {self.encoder}")
-        self.prior = MLP(
-            num_student_obs, 2 * latent_dim, prior_hidden_dims, activation
-        )  # 输出 mu + logvar
-        print(f"CVAE Prior: {self.prior}")
-        self.decoder = MLP(
-            num_student_obs + latent_dim, num_actions, decoder_hidden_dims, activation
-        )
-        print(f"CVAE Decoder: {self.decoder}")
+        # 先验网络：从学生观测到潜在均值和 logvar
+        self.prior_mu = MLP(num_student_obs, latent_dim, student_hidden_dims, activation)
+        self.prior_logvar = MLP(num_student_obs, latent_dim, student_hidden_dims, activation)
+        print(f"Prior Networks: mu={self.prior_mu}, logvar={self.prior_logvar}")
 
-        # 观测归一化（继承原类）
+        # 编码器：从教师观测到残差 mu_e 和 logvar_e（残差设计仅对 mu）
+        self.encoder_mu = MLP(num_teacher_obs, latent_dim, teacher_hidden_dims, activation)
+        self.encoder_logvar = MLP(num_teacher_obs, latent_dim, teacher_hidden_dims, activation)
+        print(f"Encoder Networks: mu={self.encoder_mu}, logvar={self.encoder_logvar}")
+
+        # 如果启用，对 mu 使用经验规范化
+        self.normalize_mu = normalize_mu
+        if normalize_mu:
+            self.mu_normalizer = EmpiricalNormalization(latent_dim)  # 潜在维度作为形状
+        else:
+            self.mu_normalizer = nn.Identity()
+
+        # 解码器：从学生观测 + 潜在 z 到动作均值
+        self.decoder = MLP(num_student_obs + latent_dim, num_actions, student_hidden_dims, activation)
+        print(f"Decoder MLP: {self.decoder}")
+
+        # 学生观测规范化
         self.student_obs_normalization = student_obs_normalization
         if student_obs_normalization:
             self.student_obs_normalizer = EmpiricalNormalization(num_student_obs)
         else:
             self.student_obs_normalizer = torch.nn.Identity()
 
-        # Teacher MLP（继承原类）
-        self.teacher = MLP(
-            num_teacher_obs, num_actions, teacher_hidden_dims, activation
-        )
+        # 教师网络（保持原样，用于生成监督动作）
+        self.teacher = MLP(num_teacher_obs, num_actions, teacher_hidden_dims, activation)
         print(f"Teacher MLP: {self.teacher}")
 
+        # 教师观测规范化
         self.teacher_obs_normalization = teacher_obs_normalization
         if teacher_obs_normalization:
             self.teacher_obs_normalizer = EmpiricalNormalization(num_teacher_obs)
         else:
             self.teacher_obs_normalizer = torch.nn.Identity()
 
-        # 动作噪声（继承原类）
+        # 动作噪声
         self.noise_std_type = noise_std_type
         if self.noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif self.noise_std_type == "log":
-            self.log_std = nn.Parameter(
-                torch.log(init_noise_std * torch.ones(num_actions))
-            )
+            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
         else:
-            raise ValueError(
-                f"未知标准差类型: {self.noise_std_type}。应为 'scalar' 或 'log'"
-            )
+            raise ValueError(f"未知噪声类型: {self.noise_std_type}. 应为 'scalar' 或 'log'")
 
         # 动作分布（在 update_distribution 中填充）
         self.distribution = None
 
-        # 禁用 Normal 验证以加速
+        # 禁用分布验证以加速
         Normal.set_default_validate_args(False)
 
-        self.latent_dim = latent_dim  # 潜在维度
-
     def reset(
-        self,
-        dones: torch.Tensor | None = None,
-        hidden_states: tuple[HiddenState, HiddenState] = (None, None),
+        self, dones: torch.Tensor | None = None, hidden_states: tuple[HiddenState, HiddenState] = (None, None)
     ) -> None:
-        """重置模块（继承原类，无需修改）。"""
-        pass
+        pass  # 无循环状态，保持为空
 
     def forward(self) -> NoReturn:
         raise NotImplementedError
@@ -152,91 +149,131 @@ class StudentTeacher_CVAE(nn.Module):
     def entropy(self) -> torch.Tensor:
         return self.distribution.entropy().sum(dim=-1)
 
-    def _sample_latent(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """
-        重参数化采样 latent z = mu + std * epsilon, 其中 epsilon ~ N(0,1)。
+    def _reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """重参数化技巧采样潜在 z。
+        
+        Args:
+            mu: 均值。
+            logvar: log 方差。
+        
+        Returns:
+            采样 z。
         """
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
-        return mu + eps * std
+        return (mu + eps * std) * self.z_scale_factor  # 应用缩放因子
 
-    def _get_posterior(
-        self, teacher_obs: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _compute_latent_dist(
+        self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """计算潜在分布（后验或先验）。
+        
+        Args:
+            student_obs: 学生观测。
+            teacher_obs: 教师观测。
+            use_prior_only: 如果 True，仅使用先验（用于部署推理）。
+        
+        Returns:
+            mu, logvar, z, kl (如果适用，否则 0)。
         """
-        计算后验分布：encoder 输出 mu, logvar；采样 z。
-        """
-        enc_out = self.encoder(teacher_obs)
-        mu = enc_out[..., : self.latent_dim]
-        logvar = enc_out[..., self.latent_dim :]
-        z = self._sample_latent(mu, logvar)
-        return z, mu, logvar
+        # 先验
+        mu_p = self.prior_mu(student_obs)
+        logvar_p = self.prior_logvar(student_obs).clamp(min=-10.0, max=2.0)
+        prior_dist = Normal(mu_p, torch.exp(0.5 * logvar_p))
 
-    def _get_prior(
-        self, student_obs: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        计算先验分布：prior 输出 mu, logvar；采样 z。
-        """
-        prior_out = self.prior(student_obs)
-        mu = prior_out[..., : self.latent_dim]
-        logvar = prior_out[..., self.latent_dim :]
-        z = self._sample_latent(mu, logvar)
-        return z, mu, logvar
+        if use_prior_only:
+            z = self._reparameterize(mu_p, logvar_p)
+            kl = torch.zeros_like(mu_p.mean())  # 无 KL
+            return mu_p, logvar_p, z, kl
 
-    def _update_distribution(self, obs: TensorDict, use_prior: bool = True) -> None:
-        """
-        更新动作分布。
-        - 使用 policy obs + latent 生成 mean。
-        - 若 use_prior=True（推理），使用 prior；否则使用 posterior（训练）。
-        """
-        student_obs = self.get_student_obs(obs)
-        student_obs = self.student_obs_normalizer(student_obs)
+        # 编码器（残差 mu）
+        mu_e = self.encoder_mu(teacher_obs)
+        logvar_e = self.encoder_logvar(teacher_obs).clamp(min=-10.0, max=2.0)
+        mu = mu_p + mu_e  # 残差设计（论文指定）
+        mu = self.mu_normalizer(mu)  # 更新：规范化后验 mu
+        posterior_dist = Normal(mu, torch.exp(0.5 * logvar_e))
 
-        if use_prior:
-            z, _, _ = self._get_prior(student_obs)  # 先验采样
-        else:
-            teacher_obs = self.get_teacher_obs(obs)
-            teacher_obs = self.teacher_obs_normalizer(teacher_obs)
-            z, _, _ = self._get_posterior(teacher_obs)  # 后验采样（训练时）
+        # 采样 z
+        z = self._reparameterize(mu, logvar_e)
 
-        # Decoder 输入：policy obs + z
+        # 计算 KL
+        kl = kl_divergence(posterior_dist, prior_dist).mean()  # 平均 KL
+
+        return mu, logvar_e, z, kl  # 注意：返回后验的 mu 和 logvar_e
+
+    def _update_distribution(self, student_obs: torch.Tensor, z: torch.Tensor) -> None:
+        """更新动作分布。
+        
+        Args:
+            student_obs: 学生观测。
+            z: 采样潜在变量。
+        """
+        # 连接学生观测和 z
         decoder_input = torch.cat([student_obs, z], dim=-1)
+        # 计算动作均值
         mean = self.decoder(decoder_input)
-
-        # 计算 std（继承原类）
+        # 计算 std
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
         elif self.noise_std_type == "log":
             std = torch.exp(self.log_std).expand_as(mean)
         else:
-            raise ValueError(f"未知标准差类型: {self.noise_std_type}。")
-
+            raise ValueError(f"未知噪声类型: {self.noise_std_type}.")
         self.distribution = Normal(mean, std)
 
     def act(self, obs: TensorDict) -> torch.Tensor:
-        """
-        生成动作：使用 prior 采样 latent，然后更新分布并采样。
-        """
-        self._update_distribution(obs, use_prior=True)  # 使用 prior（部署模式）
-        return self.distribution.sample()
-
-    def act_inference(self, obs: TensorDict) -> torch.Tensor:
-        """
-        确定性推理：使用 prior 的均值 latent，然后 decoder 输出 mean。
+        """生成动作（rollout 时，使用后验采样 z 以获得高质量动作）。
+        
+        Args:
+            obs: 观测字典。
+        
+        Returns:
+            采样动作。
         """
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
-        prior_out = self.prior(student_obs)
-        mu_prior = prior_out[
-            ..., : self.latent_dim
-        ]  # 使用 prior mu 作为 deterministic z
-        decoder_input = torch.cat([student_obs, mu_prior], dim=-1)
-        return self.decoder(decoder_input)
+        teacher_obs = self.get_teacher_obs(obs)
+        teacher_obs = self.teacher_obs_normalizer(teacher_obs)
+
+        # 使用后验采样 z（模拟中可用）
+        _, _, z, _ = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=False)
+        self._update_distribution(student_obs, z)
+        return self.distribution.sample()
+
+    def act_inference(self, obs: TensorDict, only_action: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """确定性推理（用于损失计算，返回动作均值和 KL）。
+        
+        Args:
+            obs: 观测字典。
+        
+        Returns:
+            动作均值, KL 值（用于蒸馏损失）。
+        """
+        student_obs = self.get_student_obs(obs)
+        student_obs = self.student_obs_normalizer(student_obs)
+        teacher_obs = self.get_teacher_obs(obs)
+        teacher_obs = self.teacher_obs_normalizer(teacher_obs)
+
+        # 使用后验均值计算 z（确定性）
+        mu, logvar, _, kl = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=False)
+        z = mu  # 使用均值以确定性
+
+        # 计算动作均值
+        decoder_input = torch.cat([student_obs, z], dim=-1)
+        action_mean = self.decoder(decoder_input)
+        if only_action:
+            return action_mean
+        else:
+            return action_mean, kl
 
     def evaluate(self, obs: TensorDict) -> torch.Tensor:
-        """
-        教师评估：使用 teacher obs 生成标签动作（继承原类）。
+        """教师评估（生成监督动作）。
+        
+        Args:
+            obs: 观测字典。
+        
+        Returns:
+            教师动作。
         """
         obs = self.get_teacher_obs(obs)
         obs = self.teacher_obs_normalizer(obs)
@@ -244,90 +281,70 @@ class StudentTeacher_CVAE(nn.Module):
             return self.teacher(obs)
 
     def get_student_obs(self, obs: TensorDict) -> torch.Tensor:
-        """获取 policy obs（继承原类）。"""
+        """获取学生观测。"""
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
         return torch.cat(obs_list, dim=-1)
 
     def get_teacher_obs(self, obs: TensorDict) -> torch.Tensor:
-        """获取 teacher obs（继承原类）。"""
+        """获取教师观测。"""
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
     def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
-        """获取隐藏状态（继承原类）。"""
         return None, None
 
     def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
-        """分离隐藏状态（继承原类）。"""
         pass
 
     def train(self, mode: bool = True) -> None:
-        """训练模式：教师保持 eval（继承原类）。"""
         super().train(mode)
+        # 确保教师在评估模式
         self.teacher.eval()
         self.teacher_obs_normalizer.eval()
 
     def update_normalization(self, obs: TensorDict) -> None:
-        """更新归一化（继承原类）。"""
         if self.student_obs_normalization:
             student_obs = self.get_student_obs(obs)
             self.student_obs_normalizer.update(student_obs)
+        # 更新：如果启用 mu 规范化，计算后验 mu 并更新统计
+        if self.normalize_mu:
+            student_obs = self.get_student_obs(obs)
+            student_obs = self.student_obs_normalizer(student_obs)  # 确保输入已规范化
+            teacher_obs = self.get_teacher_obs(obs)
+            teacher_obs = self.teacher_obs_normalizer(teacher_obs)
+            mu, _, _, _ = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=False)  # 使用后验 mu
+            self.mu_normalizer.update(mu)  # 更新运行均值和方差
 
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
+        """加载参数（兼容教师和学生）。
+        
+        Args:
+            state_dict: 状态字典。
+            strict: 是否严格匹配。
+        
+        Returns:
+            是否恢复训练。
         """
-        加载状态字典：支持教师或完整 CVAE 参数（扩展原类）。
-        """
-        # 检查并加载教师参数（继承原类）
-        if any("actor" in key for key in state_dict):  # 从 RL 训练加载
+        # 与原类相同，略微调整以包含 CVAE 组件
+        if any("actor" in key for key in state_dict):  # 从 RL 加载教师
             teacher_state_dict = {}
             teacher_obs_normalizer_state_dict = {}
             for key, value in state_dict.items():
                 if "actor." in key:
                     teacher_state_dict[key.replace("actor.", "")] = value
                 if "actor_obs_normalizer." in key:
-                    teacher_obs_normalizer_state_dict[
-                        key.replace("actor_obs_normalizer.", "")
-                    ] = value
+                    teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
             self.teacher.load_state_dict(teacher_state_dict, strict=strict)
-            self.teacher_obs_normalizer.load_state_dict(
-                teacher_obs_normalizer_state_dict, strict=strict
-            )
+            self.teacher_obs_normalizer.load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
             self.loaded_teacher = True
             self.teacher.eval()
             self.teacher_obs_normalizer.eval()
-            return False  # 非恢复训练
-
-        # 加载 CVAE 参数（新增）
-        elif any(
-            "encoder" in key or "prior" in key or "decoder" in key for key in state_dict
-        ):
+            return False
+        elif any("student" in key for key in state_dict):  # 从蒸馏加载
             super().load_state_dict(state_dict, strict=strict)
             self.loaded_teacher = True
             self.teacher.eval()
             self.teacher_obs_normalizer.eval()
-            return True  # 恢复训练
-
+            return True
         else:
-            raise ValueError("state_dict 不包含教师或 CVAE 参数")
-
-    # 新增：计算 KL 损失（在 Distillation.update 中调用，若需自定义）
-    def compute_kl_loss(
-        self,
-        post_mu: torch.Tensor,
-        post_logvar: torch.Tensor,
-        prior_mu: torch.Tensor,
-        prior_logvar: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        计算 KL 散度：D_{KL}(q(z|s_t^{priv}) || p(z|s_t^{dep}))。
-        公式：\frac{1}{2} \sum (\log \sigma_p^2 - \log \sigma_q^2 + \frac{\sigma_q^2 + (\mu_q - \mu_p)^2}{\sigma_p^2} - 1)。
-        """
-        kl = -0.5 * torch.sum(
-            1
-            + post_logvar
-            - prior_logvar
-            - (torch.exp(post_logvar) + (post_mu - prior_mu) ** 2)
-            / torch.exp(prior_logvar),
-            dim=-1,
-        )
-        return self.kl_weight * kl.mean()
+            raise ValueError("state_dict 不包含学生或教师参数")

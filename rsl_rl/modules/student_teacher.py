@@ -128,7 +128,7 @@ class StudentTeacher(nn.Module):
         self._update_distribution(obs)
         return self.distribution.sample()
 
-    def act_inference(self, obs: TensorDict) -> torch.Tensor:
+    def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         return self.student(obs)

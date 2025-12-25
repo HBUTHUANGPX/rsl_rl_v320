@@ -152,7 +152,7 @@ class StudentTeacherRecurrent(nn.Module):
         self._update_distribution(out_mem)
         return self.distribution.sample()
 
-    def act_inference(self, obs: TensorDict) -> torch.Tensor:
+    def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         obs = self.get_student_obs(obs)
         obs = self.student_obs_normalizer(obs)
         out_mem = self.memory_s(obs).squeeze(0)

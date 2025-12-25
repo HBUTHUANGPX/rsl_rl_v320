@@ -8,7 +8,7 @@ from __future__ import annotations
 from tensordict import TensorDict
 
 from rsl_rl.algorithms import Distillation
-from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
+from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacher_CVAE
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.storage import RolloutStorage
 
@@ -35,7 +35,7 @@ class DistillationRunner(OnPolicyRunner):
         """Construct the distillation algorithm."""
         # Initialize the policy
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
-        student_teacher: StudentTeacher | StudentTeacherRecurrent = student_teacher_class(
+        student_teacher: StudentTeacher | StudentTeacherRecurrent | StudentTeacher_CVAE= student_teacher_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 

@@ -168,7 +168,7 @@ class ActorCriticRecurrent(nn.Module):
         self._update_distribution(out_mem)
         return self.distribution.sample()
 
-    def act_inference(self, obs: TensorDict) -> torch.Tensor:
+    def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         out_mem = self.memory_a(obs).squeeze(0)
