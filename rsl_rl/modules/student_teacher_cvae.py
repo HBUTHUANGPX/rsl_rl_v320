@@ -76,16 +76,14 @@ class StudentTeacher_CVAE(nn.Module):
             assert len(obs[obs_group].shape) == 2, "仅支持 1D 观测。"
             num_teacher_obs += obs[obs_group].shape[-1]
 
-        # CVAE 组件
-        # 先验网络：从学生观测到潜在均值和 logvar
-        self.prior_mu = MLP(num_student_obs, latent_dim, student_hidden_dims, activation)
-        self.prior_logvar = MLP(num_student_obs, latent_dim, student_hidden_dims, activation)
-        print(f"Prior Networks: mu={self.prior_mu}, logvar={self.prior_logvar}")
+        # CVAE 组件（修改：prior 和 encoder 各用一个 MLP 输出 2*latent_dim，然后分割）
+        # 先验网络：从学生观测到 [mu_p, logvar_p]
+        self.prior_network = MLP(num_student_obs, 2 * latent_dim, student_hidden_dims, activation)
+        print(f"Prior Network: {self.prior_network}")
 
-        # 编码器：从教师观测到残差 mu_e 和 logvar_e（残差设计仅对 mu）
-        self.encoder_mu = MLP(num_teacher_obs, latent_dim, teacher_hidden_dims, activation)
-        self.encoder_logvar = MLP(num_teacher_obs, latent_dim, teacher_hidden_dims, activation)
-        print(f"Encoder Networks: mu={self.encoder_mu}, logvar={self.encoder_logvar}")
+        # 编码器：从教师观测到 [mu_e, logvar_e]
+        self.encoder_network = MLP(num_teacher_obs, 2 * latent_dim, teacher_hidden_dims, activation)
+        print(f"Encoder Network: {self.encoder_network}")
 
         # 如果启用，对 mu 使用经验规范化
         self.normalize_mu = normalize_mu
@@ -178,18 +176,20 @@ class StudentTeacher_CVAE(nn.Module):
         Returns:
             mu, logvar, z, kl (如果适用，否则 0)。
         """
-        # 先验参数
-        mu_p = self.prior_mu(student_obs)
-        logvar_p = self.prior_logvar(student_obs).clamp(min=-10.0, max=2.0)
+        # 先验参数（从单一 MLP 输出分割）
+        prior_out = self.prior_network(student_obs)
+        mu_p, logvar_p = prior_out.split(self.latent_dim, dim=-1)
+        logvar_p = logvar_p.clamp(min=-10.0, max=2.0)
 
         if use_prior_only:
             z = self._reparameterize(mu_p, logvar_p)
             kl = torch.zeros_like(mu_p.mean())  # 无 KL
             return mu_p, logvar_p, z, kl
 
-        # 编码器残差参数
-        mu_e = self.encoder_mu(teacher_obs)
-        logvar_e = self.encoder_logvar(teacher_obs).clamp(min=-10.0, max=2.0)
+        # 编码器残差参数（从单一 MLP 输出分割）
+        encoder_out = self.encoder_network(teacher_obs)
+        mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)
+        logvar_e = logvar_e.clamp(min=-10.0, max=2.0)
 
         # 后验 mu（residual 设计）
         mu = mu_p + mu_e
