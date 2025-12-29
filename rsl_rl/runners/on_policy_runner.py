@@ -45,8 +45,9 @@ class OnPolicyRunner:
         # Create the algorithm
         self.alg = self._construct_algorithm(obs)
 
-        # Create the logger
-        self.init_logger(log_dir=log_dir)
+        if log_dir is not None:
+            # Create the logger
+            self.init_logger(log_dir=log_dir)
 
         self.current_learning_iteration = 0
         
