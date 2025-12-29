@@ -46,6 +46,12 @@ class OnPolicyRunner:
         self.alg = self._construct_algorithm(obs)
 
         # Create the logger
+        self.init_logger(log_dir=log_dir)
+
+        self.current_learning_iteration = 0
+        
+    def init_logger(self, log_dir: str | None = None) -> None:
+        # Create the logger
         self.logger = Logger(
             log_dir=log_dir,
             cfg=self.cfg,
@@ -56,8 +62,6 @@ class OnPolicyRunner:
             gpu_global_rank=self.gpu_global_rank,
             device=self.device,
         )
-
-        self.current_learning_iteration = 0
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Randomize initial episode lengths (for exploration)
