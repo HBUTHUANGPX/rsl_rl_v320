@@ -21,6 +21,8 @@ class StudentTeacher_CVAE(nn.Module):
         obs: TensorDict,
         obs_groups: dict[str, list[str]],
         num_actions: int,
+        teacher_num: int = 1,
+        motion_run_names: list[str] = [""],
         latent_dim: int = 64,  # CVAE 潜在维度（从配置传入）
         beta_kl: float = 0.1,  # KL 损失权重（从配置传入）
         student_obs_normalization: bool = False,
@@ -102,17 +104,22 @@ class StudentTeacher_CVAE(nn.Module):
             self.student_obs_normalizer = EmpiricalNormalization(num_student_obs)
         else:
             self.student_obs_normalizer = torch.nn.Identity()
+        # 多教师支持
+        self.teacher = nn.ModuleList()
+        self.teacher_obs_normalizer = nn.ModuleList()
+        self.teacher_num = teacher_num
+        for i in range(teacher_num):
+            # 教师网络（保持原样，用于生成监督动作）
+            teacher_net = MLP(num_teacher_obs, num_actions, teacher_hidden_dims, activation)
+            self.teacher.append(teacher_net)
+            print(f"Teacher MLP {i}: {teacher_net}")
 
-        # 教师网络（保持原样，用于生成监督动作）
-        self.teacher = MLP(num_teacher_obs, num_actions, teacher_hidden_dims, activation)
-        print(f"Teacher MLP: {self.teacher}")
-
-        # 教师观测规范化
-        self.teacher_obs_normalization = teacher_obs_normalization
-        if teacher_obs_normalization:
-            self.teacher_obs_normalizer = EmpiricalNormalization(num_teacher_obs)
-        else:
-            self.teacher_obs_normalizer = torch.nn.Identity()
+            # 教师观测规范化
+            if teacher_obs_normalization:
+                teacher_obs_norm = EmpiricalNormalization(num_teacher_obs)
+            else:
+                teacher_obs_norm = torch.nn.Identity()
+            self.teacher_obs_normalizer.append(teacher_obs_norm)
 
         # 动作噪声
         self.noise_std_type = noise_std_type
@@ -283,6 +290,10 @@ class StudentTeacher_CVAE(nn.Module):
             教师动作。
         """
         obs = self.get_teacher_obs(obs)
+        motion_id = self.get_motion_id(obs)
+        
+        # 根据 motion_id 选择对应教师
+
         obs = self.teacher_obs_normalizer(obs)
         with torch.no_grad():
             return self.teacher(obs)
@@ -297,6 +308,14 @@ class StudentTeacher_CVAE(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
+    def get_motion_id(self, obs: TensorDict) -> torch.Tensor:
+        """获取 motion_id 观测（如果存在）。"""
+        if "motion_id" in self.obs_groups and self.obs_groups["motion_id"]:
+            obs_list = [obs[obs_group] for obs_group in self.obs_groups["motion_id"]]
+            return torch.cat(obs_list, dim=-1)
+        else:
+            raise ValueError("观测组中未定义 'motion_id'")
+        
     def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
         return None, None
 
@@ -322,7 +341,7 @@ class StudentTeacher_CVAE(nn.Module):
             mu, _, _, _ = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=False)  # 使用后验 mu
             self.mu_normalizer.update(mu)  # 更新运行均值和方差
 
-    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
+    def load_state_dicts(self, state_dicts: list[dict | None], strict: bool = True) -> bool:
         """加载参数（兼容教师和学生）。
         
         Args:
@@ -333,25 +352,25 @@ class StudentTeacher_CVAE(nn.Module):
             是否恢复训练。
         """
         # 与原类相同，略微调整以包含 CVAE 组件
-        if any("actor" in key for key in state_dict):  # 从 RL 加载教师
-            teacher_state_dict = {}
-            teacher_obs_normalizer_state_dict = {}
-            for key, value in state_dict.items():
-                if "actor." in key:
-                    teacher_state_dict[key.replace("actor.", "")] = value
-                if "actor_obs_normalizer." in key:
-                    teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
-            self.teacher.load_state_dict(teacher_state_dict, strict=strict)
-            self.teacher_obs_normalizer.load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
-            self.loaded_teacher = True
-            self.teacher.eval()
-            self.teacher_obs_normalizer.eval()
-            return False
-        elif any("student" in key for key in state_dict):  # 从蒸馏加载
-            super().load_state_dict(state_dict, strict=strict)
-            self.loaded_teacher = True
-            self.teacher.eval()
-            self.teacher_obs_normalizer.eval()
-            return True
-        else:
-            raise ValueError("state_dict 不包含学生或教师参数")
+        if not state_dicts:
+            raise ValueError("state_dicts 为空列表。")
+        if len(state_dicts) < 1:
+            raise ValueError("state_dicts 列表长度不足，至少应包含一个元素。")
+        if not len(state_dicts) == self.teacher_num:
+            raise ValueError(f"state_dicts 列表长度不正确，应该包含 {self.teacher_num} 个元素，实际长度为 {len(state_dicts)}。")
+
+        for i, state_dict in enumerate(state_dicts):
+            if any("actor" in key for key in state_dict["model_state_dict"]):  # 从 RL 加载教师
+                teacher_state_dict = {}
+                teacher_obs_normalizer_state_dict = {}
+                for key, value in state_dict["model_state_dict"].items():
+                    if "actor." in key:
+                        teacher_state_dict[key.replace("actor.", "")] = value
+                    if "actor_obs_normalizer." in key:
+                        teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
+                self.teacher[i].load_state_dict(teacher_state_dict, strict=strict)
+                self.teacher_obs_normalizer[i].load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
+                self.teacher[i].eval()
+                self.teacher_obs_normalizer[i].eval()
+        self.loaded_teacher = True
+        return False

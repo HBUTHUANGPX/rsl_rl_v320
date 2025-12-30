@@ -7,5 +7,5 @@
 
 from .distillation import Distillation
 from .ppo import PPO
-
-__all__ = ["PPO", "Distillation"]
+from .multi_teacher_distillation import MultiTeacherDistillation
+__all__ = ["PPO", "Distillation", "MultiTeacherDistillation"]

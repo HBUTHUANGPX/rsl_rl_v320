@@ -4,39 +4,83 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
+import torch
 
 from tensordict import TensorDict
-
-from rsl_rl.algorithms import Distillation
-from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacher_CVAE
-from rsl_rl.runners import OnPolicyRunner,DistillationRunner
+from collections.abc import Sequence
+from rsl_rl.algorithms import Distillation, PPO, MultiTeacherDistillation
+from rsl_rl.env import VecEnv
+from rsl_rl.runners import OnPolicyRunner, DistillationRunner
 from rsl_rl.storage import RolloutStorage
+from rsl_rl.modules import (
+    ActorCritic,
+    ActorCriticCNN,
+    ActorCriticRecurrent,
+    StudentTeacher,
+    StudentTeacherRecurrent,
+    StudentTeacher_CVAE,
+    resolve_rnd_config,
+    resolve_symmetry_config,
+)
+import warnings
 
 
 class MultiTeacherDistillationRunner(DistillationRunner):
     """Distillation runner for training and evaluation of teacher-student methods."""
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
-        # Check if teacher is loaded
-        if not self.alg.policy.loaded_teacher:
-            raise ValueError("Teacher model parameters not loaded. Please load a teacher model to distill.")
+    def __init__(
+        self,
+        env: VecEnv,
+        train_cfg: dict,
+        log_dir: str | None = None,
+        device: str = "cpu",
+        motion_run_names: list[str] = [""],
+        teacher_names: list[str] = [""]
+    ) -> None:
+        self.motion_run_names = motion_run_names
+        self.teacher_num = len(teacher_names)
+        print(f"[INFO]: Number of teachers: {self.teacher_num}")
+        super().__init__(env, train_cfg, log_dir, device)
 
-        super().learn(num_learning_iterations, init_at_random_ep_len)
+    def load(
+        self,
+        paths: str | Sequence[str] | list[str],
+        load_optimizer: bool = True,
+        map_location: str | None = None,
+    ) -> dict:
+        if isinstance(paths, str):
+            paths = [paths]
+        loaded_dicts: list[dict | None] = [
+            torch.load(p, weights_only=False, map_location=map_location) for p in paths
+        ]
+        resumed_training = self.alg.policy.load_state_dicts(
+            loaded_dicts
+        )
 
-    def _get_default_obs_sets(self) -> list[str]:
-        """Get the the default observation sets required for the algorithm.
+        # Load RND model if used
+        if self.alg_cfg["rnd_cfg"]:
+            self.alg.rnd.load_state_dict(loaded_dicts[0]["rnd_state_dict"])
+        # Load optimizer if used
+        if load_optimizer and resumed_training:
+            # Algorithm optimizer
+            self.alg.optimizer.load_state_dict(loaded_dicts[0]["optimizer_state_dict"])
+            # RND optimizer if used
+            if self.alg_cfg["rnd_cfg"]:
+                self.alg.rnd_optimizer.load_state_dict(
+                    loaded_dicts[0]["rnd_optimizer_state_dict"]
+                )
+        # Load current learning iteration
+        if resumed_training:
+            self.current_learning_iteration = loaded_dicts[0]["iter"]
+        print(f"[INFO]: Loaded checkpoint from :\r\n{paths}")
+        return loaded_dicts[0]["infos"]
 
-        .. note::
-            See :func:`resolve_obs_groups` for more details on the handling of observation sets.
-        """
-        return ["teacher"]
-
-    def _construct_algorithm(self, obs: TensorDict) -> Distillation:
+    def _construct_algorithm(self, obs: TensorDict) -> MultiTeacherDistillation:
         """Construct the distillation algorithm."""
         # Initialize the policy
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
-        student_teacher: StudentTeacher | StudentTeacherRecurrent | StudentTeacher_CVAE= student_teacher_class(
-            obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
+        student_teacher: StudentTeacher_CVAE= student_teacher_class(
+            obs, self.cfg["obs_groups"], self.env.num_actions, self.teacher_num,self.motion_run_names, **self.policy_cfg
         ).to(self.device)
 
         # Initialize the storage
@@ -46,7 +90,7 @@ class MultiTeacherDistillationRunner(DistillationRunner):
 
         # Initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        alg: Distillation = alg_class(
+        alg: MultiTeacherDistillation = alg_class(
             student_teacher, storage, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
 
