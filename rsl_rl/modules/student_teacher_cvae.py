@@ -274,19 +274,19 @@ class StudentTeacher_CVAE(nn.Module):
         """
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
-        teacher_obs = self.get_teacher_obs(obs)
-        motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
-        unique_ids, _ = torch.unique(motion_id, return_inverse=True)
-        _teacher_obs = torch.zeros_like(teacher_obs)
-        for uid in unique_ids:
-            mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
-            sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
-            if sub_obs.numel() == 0:
-                continue
-            _teacher_obs[mask] = self.teacher_obs_normalizer[uid](sub_obs)
+        # teacher_obs = self.get_teacher_obs(obs)
+        # motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+        # unique_ids, _ = torch.unique(motion_id, return_inverse=True)
+        # _teacher_obs = torch.zeros_like(teacher_obs)
+        # for uid in unique_ids:
+        #     mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
+        #     sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
+        #     if sub_obs.numel() == 0:
+        #         continue
+        #     _teacher_obs[mask] = self.teacher_obs_normalizer[uid](sub_obs)
 
         # 使用后验均值计算 z（确定性）
-        mu, logvar, _, kl = self._compute_latent_dist(student_obs, _teacher_obs, use_prior_only=False)
+        mu, logvar, _, kl = self._compute_latent_dist(student_obs, None, use_prior_only=True)
         z = mu  # 使用均值以确定性
 
         # 计算动作均值
@@ -386,7 +386,58 @@ class StudentTeacher_CVAE(nn.Module):
             teacher_obs = self.teacher_obs_normalizer(teacher_obs)
             mu, _, _, _ = self._compute_latent_dist(student_obs, _teacher_obs, use_prior_only=False)  # 使用后验 mu
             self.mu_normalizer.update(mu)  # 更新运行均值和方差
-
+    def load_state_dicts_play(self, state_dicts: dict[dict | None], strict: bool = True) -> bool:
+        # 与原类相同，略微调整以包含 CVAE 组件
+        if not state_dicts:
+            raise ValueError("state_dicts 为空列表。")
+        clips_num = len(self.motion_run_names)
+        if len(state_dicts) ==1:
+            state_dict = state_dicts[next(iter(state_dicts))]
+        else:
+            raise ValueError(f"提供的 state_dicts 数量 ({len(state_dicts)})应该为1。")
+        keys = [key for key in state_dict["model_state_dict"]]
+        pattern = r'^teacher_obs_normalizer\.\d+\.count$'  # 使用^和$确保完全匹配
+        import re
+        count = sum(1 for s in keys if re.fullmatch(pattern, s))
+        if count != clips_num:
+            raise ValueError(f"提供的 state_dicts 中教师数量 ({count}) 与 motion_run_names 数量 ({clips_num}) 不匹配。")
+        if any("actor" in key for key in state_dict["model_state_dict"]):  # 从 RL 加载教师
+            for i in range(count):
+                teacher_state_dict = {}
+                teacher_obs_normalizer_state_dict = {}
+                for key, value in state_dict["model_state_dict"].items():
+                    if "teacher." in key:
+                        teacher_state_dict[key.replace("teacher."+str(i), "")] = value
+                    if "teacher_obs_normalizer." in key:
+                        teacher_obs_normalizer_state_dict[key.replace("teacher_obs_normalizer."+str(i), "")] = value
+                self.teacher[i].load_state_dict(teacher_state_dict, strict=strict)
+                self.teacher_obs_normalizer[i].load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
+                self.teacher[i].eval()
+                self.teacher_obs_normalizer[i].eval()
+        self.loaded_teacher = True
+        # 对state_dicts进行查询，提取出每个clip对应的teacher网络
+        for i, run_name in enumerate(self.motion_run_names):
+            state_dict = state_dicts.get(run_name)
+            if state_dict is None:
+                continue  # 虽然前检查已确保不为空，但为鲁棒性保留
+            
+            if "model_state_dict" not in state_dict:
+                raise ValueError(f"policy {run_name}' 的状态字典缺少 'model_state_dict' 键。")
+            if any("actor" in key for key in state_dict["model_state_dict"]):  # 从 RL 加载教师
+                teacher_state_dict = {}
+                teacher_obs_normalizer_state_dict = {}
+                for key, value in state_dict["model_state_dict"].items():
+                    if "actor." in key:
+                        teacher_state_dict[key.replace("actor.", "")] = value
+                    if "actor_obs_normalizer." in key:
+                        teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
+                self.teacher[i].load_state_dict(teacher_state_dict, strict=strict)
+                self.teacher_obs_normalizer[i].load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
+                self.teacher[i].eval()
+                self.teacher_obs_normalizer[i].eval()
+        self.loaded_teacher = True
+        return False
+    
     def load_state_dicts(self, state_dicts: dict[dict | None], strict: bool = True) -> bool:
         """加载参数（兼容教师和学生）。
         

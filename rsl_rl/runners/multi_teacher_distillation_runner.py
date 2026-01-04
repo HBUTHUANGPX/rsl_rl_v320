@@ -37,6 +37,8 @@ class MultiTeacherDistillationRunner(DistillationRunner):
         motion_run_names: list[str] = [""],
         teacher_names: list[str] = [""],
     ) -> None:
+        if isinstance(teacher_names, str):
+            teacher_names = [teacher_names]
         self.motion_run_names = motion_run_names
         self.teacher_num = len(teacher_names)
         print(f"[INFO]: Number of teachers: {self.teacher_num}")
@@ -47,6 +49,7 @@ class MultiTeacherDistillationRunner(DistillationRunner):
         paths: str | Sequence[str] | list[str],
         load_optimizer: bool = True,
         map_location: str | None = None,
+        is_eval: bool = False,
     ) -> dict:
         if isinstance(paths, str):
             paths = [paths]
@@ -54,7 +57,10 @@ class MultiTeacherDistillationRunner(DistillationRunner):
             os.path.basename(os.path.dirname(p)): torch.load(p, weights_only=False, map_location=map_location)
             for p in paths
         }
-        resumed_training = self.alg.policy.load_state_dicts(loaded_dicts)
+        if is_eval:
+            resumed_training = self.alg.policy.load_state_dicts_play(loaded_dicts)
+        else:
+            resumed_training = self.alg.policy.load_state_dicts(loaded_dicts)
 
         # Load RND model if used
         if self.alg_cfg["rnd_cfg"]:
