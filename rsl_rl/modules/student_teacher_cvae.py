@@ -34,6 +34,8 @@ class StudentTeacher_CVAE(nn.Module):
         noise_std_type: str = "scalar",
         normalize_mu: bool = False,  # 新参数，从配置传入
         z_scale_factor: float = 1.0,  # 新增：z 的缩放因子（默认 1.0，不缩放；从配置传入）
+        prior_hidden_dims = [1024, 512, 128],
+        encoder_hidden_dims = [512, 256, 128],
         **kwargs: dict[str, Any],
     ) -> None:
         """初始化 CVAE-based 学生-教师模块。
@@ -81,11 +83,11 @@ class StudentTeacher_CVAE(nn.Module):
 
         # CVAE 组件（修改：prior 和 encoder 各用一个 MLP 输出 2*latent_dim，然后分割）
         # 先验网络：从学生观测到 [mu_p, logvar_p]
-        self.prior_network = MLP(num_student_obs, 2 * latent_dim, student_hidden_dims, activation)
+        self.prior_network = MLP(num_student_obs, 2 * latent_dim, prior_hidden_dims, activation)
         print(f"Prior Network: {self.prior_network}")
 
         # 编码器：从教师观测到 [mu_e, logvar_e]
-        self.encoder_network = MLP(num_teacher_obs, 2 * latent_dim, teacher_hidden_dims, activation)
+        self.encoder_network = MLP(num_teacher_obs, 2 * latent_dim, encoder_hidden_dims, activation)
         print(f"Encoder Network: {self.encoder_network}")
 
         # 如果启用，对 mu 使用经验规范化
