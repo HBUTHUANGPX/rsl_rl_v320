@@ -174,7 +174,7 @@ class StudentTeacher_CVAE(nn.Module):
         return (mu + eps * std) * self.z_scale_factor
 
     def _compute_latent_dist(
-        self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False, only_action: bool = False
+        self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False, need_kl: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """计算潜在分布（后验或先验），并返回 KL。
         
@@ -191,8 +191,10 @@ class StudentTeacher_CVAE(nn.Module):
         mu_p, logvar_p = prior_out.split(self.latent_dim, dim=-1)
         logvar_p = logvar_p.clamp(min=-10.0, max=2.0)
 
-        
-        if not only_action: # 更新kl
+        # 采样 z
+        if use_prior_only: # train inference和 eval inference 都会走这里,使用prior构建的latent
+            z = self._reparameterize(mu_p, logvar_p)
+        else: # rollout时使用后验构建的latent
             # 编码器残差参数（从单一 MLP 输出分割）
             encoder_out = self.encoder_network(teacher_obs)
             mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)
@@ -201,23 +203,18 @@ class StudentTeacher_CVAE(nn.Module):
             # 后验 mu（residual 设计）
             mu = mu_p + mu_e
             mu = self.mu_normalizer(mu)  # 规范化（如果启用）
+            z = self._reparameterize(mu, logvar_e)
 
-            # 计算 KL（使用作者显式公式，encoder_mu 为 total_mu）
+        if need_kl: # train inference更新kl
             kl = 0.5 * (
                 logvar_p - logvar_e + 
                 torch.exp(logvar_e) / torch.exp(logvar_p) + 
-                (mu - mu_p)**2 / torch.exp(logvar_p) - 1
-            ).sum(-1).mean()  # 修正：使用显式公式，确保数值稳定
-        else: # 不更新kl，只在eval下使用
+                mu_e**2 / torch.exp(logvar_p) - 1 # mu - mu_p = mu_e 这里简化了，参考residual设计
+            ).sum(-1).mean()
+        else: #  eval inference 和 rollout不更新kl
             kl = torch.zeros_like(mu_p.mean())  # 无 KL
 
-        # 采样 z
-        if use_prior_only:
-            z = self._reparameterize(mu_p, logvar_p)
-            return mu_p, logvar_p, z, kl  # 返回后验参数
-        else:
-            z = self._reparameterize(mu, logvar_e)
-            return mu, logvar_e, z, kl  # 返回后验参数
+        return None, None, z, kl  # 返回后验参数
 
     def _update_distribution(self, student_obs: torch.Tensor, z: torch.Tensor) -> None:
         """更新动作分布。
@@ -261,12 +258,12 @@ class StudentTeacher_CVAE(nn.Module):
                 continue
             _teacher_obs[mask] = self.teacher_obs_normalizer[uid](sub_obs)
 
-        # 使用后验采样 z（模拟中可用）
-        _, _, z, _ = self._compute_latent_dist(student_obs, _teacher_obs, use_prior_only=False)
+        # 1. rollout 时使用后验构建 latent,不更新kl
+        _, _, z, _ = self._compute_latent_dist(student_obs, _teacher_obs, use_prior_only=False, need_kl=False)
         self._update_distribution(student_obs, z)
         return self.distribution.sample()
 
-    def act_inference(self, obs: TensorDict, only_action: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def act_inference(self, obs: TensorDict, need_kl: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """确定性推理（用于损失计算，返回动作均值和 KL）。
         
         Args:
@@ -278,7 +275,7 @@ class StudentTeacher_CVAE(nn.Module):
         """
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
-        if not only_action:
+        if need_kl: # 2. train inference,使用prior构建latent
             teacher_obs = self.get_teacher_obs(obs)
             motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
             unique_ids, _ = torch.unique(motion_id, return_inverse=True)
@@ -289,18 +286,15 @@ class StudentTeacher_CVAE(nn.Module):
                 if sub_obs.numel() == 0:
                     continue
                 _teacher_obs[mask] = self.teacher_obs_normalizer[uid](sub_obs)
+            _, _, z, kl = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=True,need_kl=need_kl)
+        else: # 3. eval inference ,使用prior构建latent
+            _, _, z, kl = self._compute_latent_dist(student_obs, None, use_prior_only=True,need_kl=need_kl)
 
-            # 使用后验均值计算 z（确定性）
-            mu, logvar, _, kl = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=True,only_action=only_action)
-        else:
-            mu, logvar, _, kl = self._compute_latent_dist(student_obs, None, use_prior_only=True,only_action=only_action)
-
-        z = mu  # 使用均值以确定性
 
         # 计算动作均值
         decoder_input = torch.cat([student_obs, z], dim=-1)
         action_mean = self.decoder(decoder_input)
-        if only_action:
+        if not need_kl:
             return action_mean
         else:
             return action_mean, kl
@@ -376,12 +370,6 @@ class StudentTeacher_CVAE(nn.Module):
         if self.student_obs_normalization:
             student_obs = self.get_student_obs(obs)
             self.student_obs_normalizer.update(student_obs)
-        # 更新：如果启用 mu 规范化，计算后验 mu 并更新统计
-        if self.normalize_mu:
-            student_obs = self.get_student_obs(obs)
-            student_obs = self.student_obs_normalizer(student_obs)  # 确保输入已规范化
-            mu, _, _, _ = self._compute_latent_dist(student_obs, None, use_prior_only=True, only_action=True)  # 使用后验 mu
-            self.mu_normalizer.update(mu)  # 更新运行均值和方差
             
     def load_state_dicts_play(self, state_dicts: dict[dict | None], strict: bool = True) -> bool:
         # 与原类相同，略微调整以包含 CVAE 组件
