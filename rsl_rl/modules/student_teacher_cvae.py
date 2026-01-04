@@ -174,7 +174,7 @@ class StudentTeacher_CVAE(nn.Module):
         return (mu + eps * std) * self.z_scale_factor
 
     def _compute_latent_dist(
-        self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False
+        self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False, only_action: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """计算潜在分布（后验或先验），并返回 KL。
         
@@ -191,29 +191,31 @@ class StudentTeacher_CVAE(nn.Module):
         mu_p, logvar_p = prior_out.split(self.latent_dim, dim=-1)
         logvar_p = logvar_p.clamp(min=-10.0, max=2.0)
 
-        if use_prior_only:
-            z = self._reparameterize(mu_p, logvar_p)
+        
+        if not only_action:
+            # 编码器残差参数（从单一 MLP 输出分割）
+            encoder_out = self.encoder_network(teacher_obs)
+            mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)
+            logvar_e = logvar_e.clamp(min=-10.0, max=2.0)
+
+            # 后验 mu（residual 设计）
+            mu = mu_p + mu_e
+            mu = self.mu_normalizer(mu)  # 规范化（如果启用）
+
+            # 计算 KL（使用作者显式公式，encoder_mu 为 total_mu）
+            kl = 0.5 * (
+                logvar_p - logvar_e + 
+                torch.exp(logvar_e) / torch.exp(logvar_p) + 
+                (mu - mu_p)**2 / torch.exp(logvar_p) - 1
+            ).sum(-1).mean()  # 修正：使用显式公式，确保数值稳定
+        else: 
             kl = torch.zeros_like(mu_p.mean())  # 无 KL
-            return mu_p, logvar_p, z, kl
-
-        # 编码器残差参数（从单一 MLP 输出分割）
-        encoder_out = self.encoder_network(teacher_obs)
-        mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)
-        logvar_e = logvar_e.clamp(min=-10.0, max=2.0)
-
-        # 后验 mu（residual 设计）
-        mu = mu_p + mu_e
-        mu = self.mu_normalizer(mu)  # 规范化（如果启用）
-
-        # 计算 KL（使用作者显式公式，encoder_mu 为 total_mu）
-        kl = 0.5 * (
-            logvar_p - logvar_e + 
-            torch.exp(logvar_e) / torch.exp(logvar_p) + 
-            (mu - mu_p)**2 / torch.exp(logvar_p) - 1
-        ).sum(-1).mean()  # 修正：使用显式公式，确保数值稳定
 
         # 采样 z
-        z = self._reparameterize(mu, logvar_e)
+        if use_prior_only:
+            z = self._reparameterize(mu_p, logvar_p)
+        else:
+            z = self._reparameterize(mu, logvar_e)
 
         return mu, logvar_e, z, kl  # 返回后验参数
 
@@ -276,19 +278,23 @@ class StudentTeacher_CVAE(nn.Module):
         """
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
-        # teacher_obs = self.get_teacher_obs(obs)
-        # motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
-        # unique_ids, _ = torch.unique(motion_id, return_inverse=True)
-        # _teacher_obs = torch.zeros_like(teacher_obs)
-        # for uid in unique_ids:
-        #     mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
-        #     sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
-        #     if sub_obs.numel() == 0:
-        #         continue
-        #     _teacher_obs[mask] = self.teacher_obs_normalizer[uid](sub_obs)
+        if not only_action:
+            teacher_obs = self.get_teacher_obs(obs)
+            motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+            unique_ids, _ = torch.unique(motion_id, return_inverse=True)
+            _teacher_obs = torch.zeros_like(teacher_obs)
+            for uid in unique_ids:
+                mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
+                sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
+                if sub_obs.numel() == 0:
+                    continue
+                _teacher_obs[mask] = self.teacher_obs_normalizer[uid](sub_obs)
 
-        # 使用后验均值计算 z（确定性）
-        mu, logvar, _, kl = self._compute_latent_dist(student_obs, None, use_prior_only=True)
+            # 使用后验均值计算 z（确定性）
+            mu, logvar, _, kl = self._compute_latent_dist(student_obs, teacher_obs, use_prior_only=True,only_action=only_action)
+        else:
+            mu, logvar, _, kl = self._compute_latent_dist(student_obs, None, use_prior_only=True,only_action=only_action)
+
         z = mu  # 使用均值以确定性
 
         # 计算动作均值
