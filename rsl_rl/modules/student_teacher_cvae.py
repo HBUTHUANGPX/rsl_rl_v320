@@ -205,7 +205,11 @@ class StudentTeacher_CVAE(nn.Module):
             mu = self.mu_normalizer(mu)  # 规范化（如果启用）
             z = self._reparameterize(mu, logvar_e)
 
-        if need_kl: # train inference更新kl
+        if need_kl: # train inference更新kl、
+            # 编码器残差参数（从单一 MLP 输出分割）
+            encoder_out = self.encoder_network(teacher_obs)
+            mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)
+            logvar_e = logvar_e.clamp(min=-10.0, max=2.0)
             kl = 0.5 * (
                 logvar_p - logvar_e + 
                 torch.exp(logvar_e) / torch.exp(logvar_p) + 
