@@ -111,7 +111,7 @@ class MultiTeacherDistillation:
             self.policy.detach_hidden_states()
             for obs, _, privileged_actions, dones in self.storage.generator():
                 # Inference of the student for gradient computation
-                actions, kl = self.policy.act_inference(obs)
+                actions, kl = self.policy.act_inference(obs, need_kl=True)
 
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, privileged_actions)
