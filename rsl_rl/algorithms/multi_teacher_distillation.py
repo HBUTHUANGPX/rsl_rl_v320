@@ -120,7 +120,7 @@ class MultiTeacherDistillation:
 
                 # KL 损失（仅如果 policy 是 CVAE）
                 if hasattr(self.policy, "beta_kl"):
-                    kl_loss = self.policy.bet-a_kl * kl
+                    kl_loss = self.policy.beta_kl * kl
                     total_loss = behavior_loss + kl_loss
                     loss += total_loss
                     mean_behavior_loss += behavior_loss.item()

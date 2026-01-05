@@ -252,11 +252,11 @@ class StudentTeacher_CVAE(nn.Module):
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
         teacher_obs = self.get_teacher_obs(obs)
-        motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
-        unique_ids, _ = torch.unique(motion_id, return_inverse=True)
+        motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+        unique_ids, _ = torch.unique(motion_group, return_inverse=True)
         _teacher_obs = torch.zeros_like(teacher_obs)
         for uid in unique_ids:
-            mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
+            mask = (motion_group == uid)  # 布尔掩码，形状 (4096,)
             sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
             if sub_obs.numel() == 0:
                 continue
@@ -281,11 +281,11 @@ class StudentTeacher_CVAE(nn.Module):
         student_obs = self.student_obs_normalizer(student_obs)
         if need_kl: # 2. train inference,使用prior构建latent
             teacher_obs = self.get_teacher_obs(obs)
-            motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
-            unique_ids, _ = torch.unique(motion_id, return_inverse=True)
+            motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+            unique_ids, _ = torch.unique(motion_group, return_inverse=True)
             _teacher_obs = torch.zeros_like(teacher_obs)
             for uid in unique_ids:
-                mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
+                mask = (motion_group == uid)  # 布尔掩码，形状 (4096,)
                 sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
                 if sub_obs.numel() == 0:
                     continue
@@ -313,16 +313,16 @@ class StudentTeacher_CVAE(nn.Module):
             教师动作。
         """
         teacher_obs = self.get_teacher_obs(obs)
-        motion_id = self.get_motion_id(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+        motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
         # 识别唯一教师索引
-        unique_ids, inverse_indices = torch.unique(motion_id, return_inverse=True)
+        unique_ids, inverse_indices = torch.unique(motion_group, return_inverse=True)
 
         # 预分配动作张量（假设动作维度为 action_dim，根据实际替换）
         actions = torch.zeros(teacher_obs.shape[0], self.num_actions, device=teacher_obs.device)
-        # 根据 motion_id 选择对应教师
+        # 根据 motion_group 选择对应教师
         with torch.no_grad():
             for uid in unique_ids:
-                mask = (motion_id == uid)  # 布尔掩码，形状 (4096,)
+                mask = (motion_group == uid)  # 布尔掩码，形状 (4096,)
                 sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
                 if sub_obs.numel() == 0:
                     continue
@@ -347,17 +347,17 @@ class StudentTeacher_CVAE(nn.Module):
         obs_list = [obs[obs_group] for obs_group in self.obs_groups["teacher"]]
         return torch.cat(obs_list, dim=-1)
 
-    def get_motion_id(self, obs: TensorDict) -> torch.Tensor:
-        """获取 motion_id 观测（如果存在）。"""
-        if "motion_id" in self.obs_groups and self.obs_groups["motion_id"]:
+    def get_motion_group(self, obs: TensorDict) -> torch.Tensor:
+        """获取 motion_group 观测（如果存在）。"""
+        if "motion_group" in self.obs_groups and self.obs_groups["motion_group"]:
             obs_list = []
-            for obs_group in self.obs_groups["motion_id"]:
+            for obs_group in self.obs_groups["motion_group"]:
                 obs_list.append(obs[obs_group])
-            # obs_list = [obs[obs_group] for obs_group in self.obs_groups["motion_id"]]
+            # obs_list = [obs[obs_group] for obs_group in self.obs_groups["motion_group"]]
             return torch.cat(obs_list, dim=-1).to(torch.int64)
         else:
-            raise ValueError("观测组中未定义 'motion_id'")
-        
+            raise ValueError("观测组中未定义 'motion_group'")
+
     def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
         return None, None
 
