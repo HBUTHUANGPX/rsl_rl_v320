@@ -38,7 +38,7 @@ class StudentMultiTeacher(StudentTeacher):
         self.teacher_num = teacher_num
         self.motion_run_names = motion_run_names
         self.num_actions = num_actions
-        
+
         num_teacher_obs = 0
         for obs_group in obs_groups["teacher"]:
             assert len(obs[obs_group].shape) == 2, "仅支持 1D 观测。"
@@ -47,8 +47,8 @@ class StudentMultiTeacher(StudentTeacher):
         # 多教师支持
         self.teacher = nn.ModuleList()
         self.teacher_obs_normalizer = nn.ModuleList()
-        self.teacher_num = teacher_num
-        for i in range(teacher_num):
+        self.teacher_num = len(motion_run_names)
+        for i in range(self.teacher_num):
             # 教师网络（保持原样，用于生成监督动作）
             teacher_net = MLP(num_teacher_obs, num_actions, teacher_hidden_dims, activation)
             self.teacher.append(teacher_net)
@@ -116,41 +116,31 @@ class StudentMultiTeacher(StudentTeacher):
         count = sum(1 for s in keys if re.fullmatch(pattern, s))
         if count != clips_num:
             raise ValueError(f"提供的 state_dicts 中教师数量 ({count}) 与 motion_run_names 数量 ({clips_num}) 不匹配。")
-        if any("actor" in key for key in state_dict["model_state_dict"]):  # 从 RL 加载教师
+        if any("teacher" in key for key in state_dict["model_state_dict"]):  # 从 RL 加载教师
             for i in range(count):
                 teacher_state_dict = {}
                 teacher_obs_normalizer_state_dict = {}
                 for key, value in state_dict["model_state_dict"].items():
-                    if "teacher." in key:
-                        teacher_state_dict[key.replace("teacher."+str(i), "")] = value
-                    if "teacher_obs_normalizer." in key:
-                        teacher_obs_normalizer_state_dict[key.replace("teacher_obs_normalizer."+str(i), "")] = value
+                    if ("teacher."+str(i)+".") in key:
+                        teacher_state_dict[key.replace("teacher."+str(i)+".", "")] = value
+                    if ("teacher_obs_normalizer."+str(i)+".") in key:
+                        teacher_obs_normalizer_state_dict[key.replace("teacher_obs_normalizer."+str(i)+".", "")] = value
                 self.teacher[i].load_state_dict(teacher_state_dict, strict=strict)
                 self.teacher_obs_normalizer[i].load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
                 self.teacher[i].eval()
                 self.teacher_obs_normalizer[i].eval()
-        self.loaded_teacher = True
-        # 对state_dicts进行查询，提取出每个clip对应的teacher网络
-        for i, run_name in enumerate(self.motion_run_names):
-            state_dict = state_dicts.get(run_name)
-            if state_dict is None:
-                continue  # 虽然前检查已确保不为空，但为鲁棒性保留
-            
-            if "model_state_dict" not in state_dict:
-                raise ValueError(f"policy {run_name}' 的状态字典缺少 'model_state_dict' 键。")
-            if any("actor" in key for key in state_dict["model_state_dict"]):  # 从 RL 加载教师
-                teacher_state_dict = {}
-                teacher_obs_normalizer_state_dict = {}
-                for key, value in state_dict["model_state_dict"].items():
-                    if "actor." in key:
-                        teacher_state_dict[key.replace("actor.", "")] = value
-                    if "actor_obs_normalizer." in key:
-                        teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
-                self.teacher[i].load_state_dict(teacher_state_dict, strict=strict)
-                self.teacher_obs_normalizer[i].load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
-                self.teacher[i].eval()
-                self.teacher_obs_normalizer[i].eval()
-        self.loaded_teacher = True
+            self.loaded_teacher = True
+        if any("student" in key for key in state_dict["model_state_dict"]):  # Load parameters from distillation training
+            student_state_dict = {}
+            student_obs_normalizer_state_dict = {}
+            for key, value in state_dict["model_state_dict"].items():
+                if "student." in key:
+                    student_state_dict[key.replace("student.", "")] = value
+                if "student_obs_normalizer." in key:
+                    student_obs_normalizer_state_dict[key.replace("student_obs_normalizer.", "")] = value
+            self.student.load_state_dict(student_state_dict, strict=strict)
+            self.student_obs_normalizer.load_state_dict(student_obs_normalizer_state_dict, strict=strict)
+
         return False
     
     def get_motion_id(self, obs: TensorDict) -> torch.Tensor:

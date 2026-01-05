@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.modules import StudentTeacher_CVAE, StudentTeacher
+from rsl_rl.modules import StudentTeacher_CVAE, StudentTeacher, StudentMultiTeacher
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_optimizer
 
@@ -15,12 +15,12 @@ from rsl_rl.utils import resolve_optimizer
 class MultiTeacherDistillation:
     """Distillation algorithm for training a student model to mimic a teacher model."""
 
-    policy: StudentTeacher_CVAE | StudentTeacher
+    policy: StudentTeacher_CVAE | StudentTeacher | StudentMultiTeacher
     """The student teacher model."""
 
     def __init__(
         self,
-        policy: StudentTeacher_CVAE | StudentTeacher,
+        policy: StudentTeacher_CVAE | StudentTeacher | StudentMultiTeacher,
         storage: RolloutStorage,
         num_learning_epochs: int = 1,
         gradient_length: int = 15,
