@@ -120,7 +120,7 @@ class MultiTeacherDistillation:
 
                 # KL 损失（仅如果 policy 是 CVAE）
                 if hasattr(self.policy, "beta_kl"):
-                    kl_loss = self.policy.beta_kl * kl
+                    kl_loss = self.policy.bet-a_kl * kl
                     total_loss = behavior_loss + kl_loss
                     loss += total_loss
                     mean_behavior_loss += behavior_loss.item()
@@ -155,7 +155,7 @@ class MultiTeacherDistillation:
 
         # Construct the loss dictionary
         if hasattr(self.policy, "beta_kl"):
-            loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss,"beta": self.policy.beta_kl}
+            loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss/self.policy.beta_kl,"beta": self.policy.beta_kl}
         else:
             loss_dict = {"behavior": mean_behavior_loss}
         return loss_dict

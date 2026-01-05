@@ -111,7 +111,7 @@ class OnPolicyRunner:
             # Update policy
             loss_dict = self.alg.update()
             if hasattr(self.alg.policy, "beta_kl"):
-                self.alg.policy.beta_kl = it/total_it*0.1+0.0001
+                self.alg.policy.beta_kl = it/total_it*0.01+0.0001
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
