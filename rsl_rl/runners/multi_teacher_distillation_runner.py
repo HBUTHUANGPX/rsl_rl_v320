@@ -19,6 +19,7 @@ from rsl_rl.modules import (
     StudentTeacher,
     StudentTeacherRecurrent,
     StudentTeacher_CVAE,
+    StudentMultiTeacher,
     resolve_rnd_config,
     resolve_symmetry_config,
 )
@@ -84,7 +85,7 @@ class MultiTeacherDistillationRunner(DistillationRunner):
         """Construct the distillation algorithm."""
         # Initialize the policy
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
-        student_teacher: StudentTeacher_CVAE = student_teacher_class(
+        student_teacher: StudentTeacher_CVAE | StudentMultiTeacher = student_teacher_class(
             obs,
             self.cfg["obs_groups"],
             self.env.num_actions,

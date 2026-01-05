@@ -102,7 +102,6 @@ class Distillation:
     def update(self) -> dict[str, float]:
         self.num_updates += 1
         mean_behavior_loss = 0
-        mean_kl_loss = 0
         loss = 0
         cnt = 0
 
@@ -111,21 +110,15 @@ class Distillation:
             self.policy.detach_hidden_states()
             for obs, _, privileged_actions, dones in self.storage.generator():
                 # Inference of the student for gradient computation
-                actions, kl = self.policy.act_inference(obs)
+                actions = self.policy.act_inference(obs)
 
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, privileged_actions)
 
-                # KL 损失（仅如果 policy 是 CVAE）
-                kl_loss = 0
-                if hasattr(self.policy, "beta_kl"):
-                    kl_loss = self.policy.beta_kl * kl
-
                 # Total loss
-                total_loss = behavior_loss + kl_loss
+                total_loss = behavior_loss
                 loss += total_loss
                 mean_behavior_loss += behavior_loss.item()
-                mean_kl_loss += kl_loss.item() if isinstance(kl_loss, torch.Tensor) else kl_loss
                 cnt += 1
 
                 # Gradient step
@@ -145,13 +138,12 @@ class Distillation:
                 self.policy.detach_hidden_states(dones.view(-1))
 
         mean_behavior_loss /= cnt
-        mean_kl_loss /= cnt
         self.storage.clear()
         self.last_hidden_states = self.policy.get_hidden_states()
         self.policy.detach_hidden_states()
 
         # Construct the loss dictionary
-        loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss}
+        loss_dict = {"behavior": mean_behavior_loss}
 
         return loss_dict
 

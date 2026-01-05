@@ -12,6 +12,7 @@ from .rnd import RandomNetworkDistillation, resolve_rnd_config
 from .student_teacher import StudentTeacher
 from .student_teacher_cvae import StudentTeacher_CVAE
 from .student_teacher_recurrent import StudentTeacherRecurrent
+from .student_multi_teacher import StudentMultiTeacher
 from .symmetry import resolve_symmetry_config
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "ActorCriticRecurrent",
     "RandomNetworkDistillation",
     "StudentTeacher",
+    "StudentMultiTeacher",
     "StudentTeacher_CVAE",
     "StudentTeacherRecurrent",
     "resolve_rnd_config",

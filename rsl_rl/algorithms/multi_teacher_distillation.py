@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.modules import StudentTeacher_CVAE
+from rsl_rl.modules import StudentTeacher_CVAE, StudentTeacher
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_optimizer
 
@@ -15,12 +15,12 @@ from rsl_rl.utils import resolve_optimizer
 class MultiTeacherDistillation:
     """Distillation algorithm for training a student model to mimic a teacher model."""
 
-    policy: StudentTeacher_CVAE
+    policy: StudentTeacher_CVAE | StudentTeacher
     """The student teacher model."""
 
     def __init__(
         self,
-        policy: StudentTeacher_CVAE,
+        policy: StudentTeacher_CVAE | StudentTeacher,
         storage: RolloutStorage,
         num_learning_epochs: int = 1,
         gradient_length: int = 15,
@@ -111,21 +111,24 @@ class MultiTeacherDistillation:
             self.policy.detach_hidden_states()
             for obs, _, privileged_actions, dones in self.storage.generator():
                 # Inference of the student for gradient computation
-                actions, kl = self.policy.act_inference(obs, need_kl=True)
-
+                if hasattr(self.policy, "beta_kl"):
+                    actions, kl = self.policy.act_inference(obs, need_kl=True)
+                else:
+                    actions = self.policy.act_inference(obs)
                 # Behavior cloning loss
                 behavior_loss = self.loss_fn(actions, privileged_actions)
 
                 # KL 损失（仅如果 policy 是 CVAE）
-                kl_loss = 0
                 if hasattr(self.policy, "beta_kl"):
                     kl_loss = self.policy.beta_kl * kl
-
-                # Total loss
-                total_loss = behavior_loss + kl_loss
-                loss += total_loss
-                mean_behavior_loss += behavior_loss.item()
-                mean_kl_loss += kl_loss.item() if isinstance(kl_loss, torch.Tensor) else kl_loss
+                    total_loss = behavior_loss + kl_loss
+                    loss += total_loss
+                    mean_behavior_loss += behavior_loss.item()
+                    mean_kl_loss += kl_loss.item() if isinstance(kl_loss, torch.Tensor) else kl_loss
+                else:
+                    total_loss = behavior_loss
+                    loss += total_loss
+                    mean_behavior_loss += behavior_loss.item()
                 cnt += 1
 
                 # Gradient step
@@ -151,8 +154,10 @@ class MultiTeacherDistillation:
         self.policy.detach_hidden_states()
 
         # Construct the loss dictionary
-        loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss}
-
+        if hasattr(self.policy, "beta_kl"):
+            loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss}
+        else:
+            loss_dict = {"behavior": mean_behavior_loss}
         return loss_dict
 
     def broadcast_parameters(self) -> None:
