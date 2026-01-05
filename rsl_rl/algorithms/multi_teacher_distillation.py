@@ -155,7 +155,7 @@ class MultiTeacherDistillation:
 
         # Construct the loss dictionary
         if hasattr(self.policy, "beta_kl"):
-            loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss}
+            loss_dict = {"behavior": mean_behavior_loss, "kl": mean_kl_loss,"beta": self.policy.beta_kl}
         else:
             loss_dict = {"behavior": mean_behavior_loss}
         return loss_dict
