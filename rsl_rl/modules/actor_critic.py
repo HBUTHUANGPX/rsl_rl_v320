@@ -121,6 +121,8 @@ class ActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
+        if torch.isnan(obs).any():
+            raise ValueError(f"张量中存在 NaN 值")
         if self.state_dependent_std:
             # Compute mean and standard deviation
             mean_and_std = self.actor(obs)
@@ -139,6 +141,7 @@ class ActorCritic(nn.Module):
                 std = self.std.expand_as(mean)
             elif self.noise_std_type == "log":
                 std = torch.exp(self.log_std).expand_as(mean)
+                # print("[INFO] use log_std")
             else:
                 raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         # Create distribution
@@ -164,7 +167,11 @@ class ActorCritic(nn.Module):
         return self.critic(obs)
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
-        obs_list = [obs[obs_group] for obs_group in self.obs_groups["policy"]]
+        obs_list = []
+        for obs_group in self.obs_groups["policy"]:
+            if torch.isnan(obs[obs_group]).any():
+                raise ValueError(f"{obs_group} 张量中存在 NaN 值")
+            obs_list.append(obs[obs_group])
         return torch.cat(obs_list, dim=-1)
 
     def get_critic_obs(self, obs: TensorDict) -> torch.Tensor:
