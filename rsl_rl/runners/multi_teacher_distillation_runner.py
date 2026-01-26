@@ -8,18 +8,12 @@ import torch
 import os
 from tensordict import TensorDict
 from collections.abc import Sequence
-from rsl_rl.algorithms import Distillation, PPO, MultiTeacherDistillation
+from rsl_rl.algorithms import PPO_Distil
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner, DistillationRunner
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.modules import (
-    ActorCritic,
-    ActorCriticCNN,
-    ActorCriticRecurrent,
-    StudentTeacher,
-    StudentTeacherRecurrent,
-    StudentTeacher_CVAE,
-    StudentMultiTeacher,
+    ActorCritic_CVAE,
     resolve_rnd_config,
     resolve_symmetry_config,
 )
@@ -81,22 +75,21 @@ class MultiTeacherDistillationRunner(DistillationRunner):
         print(f"[INFO]: Loaded checkpoint from :\r\n{paths}")
         return next(iter(loaded_dicts.values()))["infos"]
 
-    def _construct_algorithm(self, obs: TensorDict) -> MultiTeacherDistillation:
+    def _construct_algorithm(self, obs: TensorDict) -> PPO_Distil:
         """Construct the distillation algorithm."""
         # Initialize the policy
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
-        student_teacher: StudentTeacher_CVAE | StudentMultiTeacher = student_teacher_class(
-            obs,
-            self.cfg["obs_groups"],
-            self.env.num_actions,
-            self.teacher_num,
-            self.motion_run_names,
+        student_teacher: ActorCritic_CVAE = student_teacher_class(
+            obs = obs,
+            obs_groups = self.cfg["obs_groups"],
+            num_actions = self.env.num_actions,
+            motion_run_names = self.motion_run_names,
             **self.policy_cfg,
         ).to(self.device)
 
         # Initialize the storage
         storage = RolloutStorage(
-            "distillation",
+            "rl",
             self.env.num_envs,
             self.cfg["num_steps_per_env"],
             obs,
@@ -106,9 +99,9 @@ class MultiTeacherDistillationRunner(DistillationRunner):
 
         # Initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        alg: MultiTeacherDistillation = alg_class(
-            student_teacher,
-            storage,
+        alg: PPO_Distil = alg_class(
+            policy = student_teacher,
+            storage = storage,
             device=self.device,
             **self.alg_cfg,
             multi_gpu_cfg=self.multi_gpu_cfg,

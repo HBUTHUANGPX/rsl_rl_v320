@@ -14,11 +14,13 @@ from .student_teacher_cvae import StudentTeacher_CVAE
 from .student_teacher_recurrent import StudentTeacherRecurrent
 from .student_multi_teacher import StudentMultiTeacher
 from .symmetry import resolve_symmetry_config
+from .actor_critic_cvae import ActorCritic_CVAE
 
 __all__ = [
     "ActorCritic",
     "ActorCriticCNN",
     "ActorCriticRecurrent",
+    "ActorCritic_CVAE",
     "RandomNetworkDistillation",
     "StudentTeacher",
     "StudentMultiTeacher",
