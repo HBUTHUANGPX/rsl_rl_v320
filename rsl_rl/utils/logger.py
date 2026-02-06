@@ -12,6 +12,7 @@ import statistics
 import time
 import torch
 from collections import deque
+from datetime import datetime,timedelta
 
 import rsl_rl
 
@@ -217,11 +218,17 @@ class Logger:
             done_it = it + 1 - start_it
             remaining_it = total_it - start_it - done_it
             eta = self.tot_time / done_it * remaining_it
+            eta_delta = timedelta(seconds=eta)
+            eta_formatted_time = f"{eta_delta.days}d {eta_delta.seconds // 3600:02}:{(eta_delta.seconds % 3600) // 60:02}:{eta_delta.seconds % 60:02}"
+            
+            tot_delta = timedelta(seconds=self.tot_time)
+            tot_formatted_time = f"{tot_delta.days}d {tot_delta.seconds // 3600:02}:{(tot_delta.seconds % 3600) // 60:02}:{tot_delta.seconds % 60:02}"
+            
             log_string += (
                 f"""{"-" * width}\n"""
                 f"""{"Iteration time:":>{pad}} {iteration_time:.2f}s\n"""
-                f"""{"Time elapsed:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-                f"""{"ETA:":>{pad}} {time.strftime("%H:%M:%S", time.gmtime(eta))}\n"""
+                f"""{"Time elapsed:":>{pad}} {tot_formatted_time}\n"""
+                f"""{"ETA:":>{pad}} {eta_formatted_time}\n"""
             )
             print(log_string)
 
