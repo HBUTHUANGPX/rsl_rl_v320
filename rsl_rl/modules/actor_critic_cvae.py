@@ -421,12 +421,14 @@ class ActorCritic_CVAE(nn.Module):
                 self.teacher[i].eval()
                 self.teacher_obs_normalizer[i].eval()
             self.loaded_teacher = True
-        if any("student_obs_normalizer" in key for key in state_dict["model_state_dict"]):  # Load parameters from distillation training
-            student_obs_normalizer_state_dict = {}
+        if any("actor_obs_normalizer" in key for key in state_dict["model_state_dict"]):  # Load parameters from distillation training
+            actor_obs_normalizer_state_dict = {}
             for key, value in state_dict["model_state_dict"].items():
-                if "student_obs_normalizer." in key:
-                    student_obs_normalizer_state_dict[key.replace("student_obs_normalizer.", "")] = value
-            self.student_obs_normalizer.load_state_dict(student_obs_normalizer_state_dict, strict=strict)
+                if "actor_obs_normalizer." in key:
+                    actor_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
+            self.actor_obs_normalizer.load_state_dict(actor_obs_normalizer_state_dict, strict=strict)
+        else:
+            print("警告：未在 state_dict 中找到 'actor_obs_normalizer' 参数。")
         if any("actor" in key for key in state_dict["model_state_dict"]):  # Load parameters from distillation training
             actor_state_dict = {}
             for key, value in state_dict["model_state_dict"].items():
