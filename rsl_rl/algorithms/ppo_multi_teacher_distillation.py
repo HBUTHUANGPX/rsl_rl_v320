@@ -13,7 +13,7 @@ from tensordict import TensorDict
 
 from rsl_rl.modules import ActorCritic_CVAE,ActorCritic, ActorCriticCNN, ActorCriticRecurrent
 from rsl_rl.modules.rnd import RandomNetworkDistillation
-from rsl_rl.storage import RolloutStorage
+from rsl_rl.storage import RolloutStorage, MultiTeacherDistillationRolloutStorage
 from rsl_rl.utils import string_to_callable
 
 
@@ -30,7 +30,7 @@ class PPO_Distil:
     def __init__(
         self,
         policy: ActorCritic_CVAE,
-        storage: RolloutStorage,
+        storage: MultiTeacherDistillationRolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
         clip_param: float = 0.2,
@@ -96,7 +96,7 @@ class PPO_Distil:
 
         # Add storage
         self.storage = storage
-        self.transition = RolloutStorage.Transition()
+        self.transition = MultiTeacherDistillationRolloutStorage.Transition()
 
         # PPO parameters
         self.clip_param = clip_param
@@ -121,8 +121,10 @@ class PPO_Distil:
         self.transition.privileged_actions = self.policy.evaluate_privileged_actions(obs).detach()
         self.transition.values = self.policy.evaluate_values(obs).detach()
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
-        self.transition.action_mean = self.policy.action_mean.detach()
-        self.transition.action_sigma = self.policy.action_std.detach()
+        self.transition.student_action_mean = self.policy.action_mean.detach()
+        self.transition.student_action_sigma = self.policy.action_std.detach()
+        self.transition.teacher_action_mean = self.policy.teacher_action_mean.detach()
+        self.transition.teacher_action_sigma = self.policy.teacher_action_std.detach()
         # Record observations before env.step()
         self.transition.observations = obs
         return self.transition.actions
@@ -195,8 +197,10 @@ class PPO_Distil:
             advantages_batch,
             returns_batch,
             old_actions_log_prob_batch,
-            old_mu_batch,
-            old_sigma_batch,
+            old_student_mu_batch,
+            old_student_sigma_batch,
+            old_teacher_mu_batch,
+            old_teacher_sigma_batch,
             hidden_states_batch,
             masks_batch,
         ) in generator:
@@ -237,9 +241,7 @@ class PPO_Distil:
             # Note: We only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
             sigma_batch = self.policy.action_std[:original_batch_size]
-            teacher_mu_batch = self.policy.teacher_action_mean[:original_batch_size]
-            teacher_sigma_batch = self.policy.teacher_action_std[:original_batch_size]
-            BC_kl = self.policy.kl_divergence(mu_batch, sigma_batch, teacher_mu_batch, teacher_sigma_batch).mean()
+            BC_kl = self.policy.kl_divergence(mu_batch, sigma_batch, old_teacher_mu_batch, old_teacher_sigma_batch).mean()
 
             entropy_batch = self.policy.entropy[:original_batch_size]
 
@@ -247,8 +249,8 @@ class PPO_Distil:
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
                     kl = torch.sum(
-                        torch.log(sigma_batch / old_sigma_batch + 1.0e-5)
-                        + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch))
+                        torch.log(sigma_batch / old_student_sigma_batch + 1.0e-5)
+                        + (torch.square(old_student_sigma_batch) + torch.square(old_student_mu_batch - mu_batch))
                         / (2.0 * torch.square(sigma_batch))
                         - 0.5,
                         axis=-1,

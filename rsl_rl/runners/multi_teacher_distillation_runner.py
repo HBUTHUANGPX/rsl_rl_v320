@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from rsl_rl.algorithms import PPO_Distil
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner, DistillationRunner
-from rsl_rl.storage import RolloutStorage
+from rsl_rl.storage import RolloutStorage, MultiTeacherDistillationRolloutStorage
 from rsl_rl.modules import (
     ActorCritic_CVAE,
     resolve_rnd_config,
@@ -88,7 +88,7 @@ class MultiTeacherDistillationRunner(DistillationRunner):
         ).to(self.device)
 
         # Initialize the storage
-        storage = RolloutStorage(
+        storage = MultiTeacherDistillationRolloutStorage(
             "rl",
             self.env.num_envs,
             self.cfg["num_steps_per_env"],
