@@ -50,6 +50,34 @@ class OnPolicyRunner:
             self.init_logger(log_dir=log_dir)
 
         self.current_learning_iteration = 0
+
+    @staticmethod
+    def _linear_schedule(step: int, start_it: int, end_it: int, start_val: float, end_val: float) -> float:
+        if end_it <= start_it:
+            return end_val
+        if step <= start_it:
+            return start_val
+        if step >= end_it:
+            return end_val
+        frac = (step - start_it) / float(end_it - start_it)
+        return start_val + frac * (end_val - start_val)
+
+    def _apply_kl_schedules(self, it: int, total_it: int) -> None:
+        beta_cfg = self.cfg.get("beta_kl_schedule")
+        if beta_cfg is not None and hasattr(self.alg.policy, "beta_kl"):
+            start_val = beta_cfg.get("start", self.alg.policy.beta_kl)
+            end_val = beta_cfg.get("end", self.alg.policy.beta_kl)
+            start_it = beta_cfg.get("start_it", 0)
+            end_it = beta_cfg.get("end_it", max(0, total_it - 1))
+            self.alg.policy.beta_kl = self._linear_schedule(it, start_it, end_it, start_val, end_val)
+
+        bc_cfg = self.cfg.get("bc_kl_coef_schedule")
+        if bc_cfg is not None and hasattr(self.alg, "bc_kl_coef"):
+            start_val = bc_cfg.get("start", self.alg.bc_kl_coef)
+            end_val = bc_cfg.get("end", self.alg.bc_kl_coef)
+            start_it = bc_cfg.get("start_it", 0)
+            end_it = bc_cfg.get("end_it", max(0, total_it - 1))
+            self.alg.bc_kl_coef = self._linear_schedule(it, start_it, end_it, start_val, end_val)
         
     def init_logger(self, log_dir: str | None = None) -> None:
         # Create the logger
@@ -109,6 +137,7 @@ class OnPolicyRunner:
                 self.alg.compute_returns(obs)
 
             # Update policy
+            self._apply_kl_schedules(it, total_it)
             loss_dict = self.alg.update()
             # if hasattr(self.alg.policy, "beta_kl"):
             #     self.alg.policy.beta_kl = it/total_it*0.01+0.0001

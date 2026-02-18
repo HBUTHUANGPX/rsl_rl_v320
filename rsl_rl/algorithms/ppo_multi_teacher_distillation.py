@@ -44,6 +44,7 @@ class PPO_Distil:
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
+        bc_kl_coef: float = 0.01,
         device: str = "cpu",
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -112,6 +113,7 @@ class PPO_Distil:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.bc_kl_coef = bc_kl_coef
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -300,7 +302,13 @@ class PPO_Distil:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean() + BC_kl*0.01 + self.policy.beta_kl * CVAE_kl
+            loss = (
+                surrogate_loss
+                + self.value_loss_coef * value_loss
+                - self.entropy_coef * entropy_batch.mean()
+                + BC_kl * self.bc_kl_coef
+                + self.policy.beta_kl * CVAE_kl
+            )
 
             # Symmetry loss
             if self.symmetry:
@@ -378,6 +386,8 @@ class PPO_Distil:
             "entropy": mean_entropy,
             "behavior_clone": mean_behavior_loss,
             "CVAE": mean_cvae_loss,
+            "beta_kl": self.policy.beta_kl,
+            "bc_kl_coef": self.bc_kl_coef,
         }
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
