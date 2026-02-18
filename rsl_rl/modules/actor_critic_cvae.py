@@ -288,7 +288,8 @@ class ActorCritic_CVAE(nn.Module):
         # 1. rollout 时使用后验构建 latent,不更新kl
         _, _, z, _ = self._compute_latent_dist(actor_obs, _teacher_obs, use_prior_only=False, need_kl=False)
         self._update_distribution(actor_obs, z)
-        self._update_teacher_distribution(obs)
+        if kwargs.get("need_teacher_distribution", False):
+            self._update_teacher_distribution(obs)
         return self.distribution.sample()
 
     def act_inference(self, obs: TensorDict, need_kl: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:

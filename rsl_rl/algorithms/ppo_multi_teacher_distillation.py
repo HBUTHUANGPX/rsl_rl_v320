@@ -117,7 +117,7 @@ class PPO_Distil:
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.policy.act(obs).detach()
+        self.transition.actions = self.policy.act(obs, need_teacher_distribution=True).detach()
         self.transition.privileged_actions = self.policy.evaluate_privileged_actions(obs).detach()
         self.transition.values = self.policy.evaluate_values(obs).detach()
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
