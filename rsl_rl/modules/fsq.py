@@ -112,7 +112,7 @@ class FSQQuantizer(nn.Module):
         z = self._scale_and_shift(codes)
         z = z.round()
         z = torch.maximum(z, torch.zeros_like(z))
-        z = torch.minimum(z, (self.levels - 1).to(z.dtype))
+        z = torch.minimum(z, (self.levels - 1).to(device=z.device, dtype=z.dtype))
         # compute mixed radix index
         basis = torch.cumprod(
             torch.cat(

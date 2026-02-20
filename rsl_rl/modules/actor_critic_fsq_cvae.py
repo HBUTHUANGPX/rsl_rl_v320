@@ -7,9 +7,10 @@ from torch.distributions import Normal
 from typing import Any, NoReturn, Tuple
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
+from rsl_rl.modules.fsq import FSQQuantizer
 
 
-class ActorCritic_CVAE(nn.Module):
+class ActorCritic_FSQ_CVAE(nn.Module):
     is_recurrent: bool = False
 
     def __init__(
@@ -18,7 +19,8 @@ class ActorCritic_CVAE(nn.Module):
         obs_groups: dict[str, list[str]],
         num_actions: int,
         motion_run_names: list[str] = [""], 
-        latent_dim: int = 64,  # CVAE 潜在空间维度
+        latent_dim: int = 64,  # CVAE 潜在空间维度 (deprecated when levels is provided)
+        levels: list[int] | None = None,  # FSQ levels list (length defines latent_dim)
         beta_kl: float = 0.1,  # KL 损失权重
         actor_obs_normalization: bool = False,
         critic_obs_normalization: bool = False,
@@ -31,23 +33,21 @@ class ActorCritic_CVAE(nn.Module):
         activation: str = "elu",
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
-        normalize_mu: bool = False,  
+        normalize_mu: bool = False,
         z_scale_factor: float = 1.0,  # z 的缩放因子
+        preserve_symmetry: bool = False,  # FSQ symmetry-preserving quantization
+        noise_dropout: float = 0.0,  # FSQ noise dropout (training only)
         **kwargs: dict[str, Any],
     ) -> None:
-        """初始化 CVAE-based actor-critic 模块，用于 PPO_Distil。
-        
-        修改点：
-        - 融合 ActorCritic 和 actorTeacher_CVAE：Actor 使用 CVAE 生成动作，Critic 保持原样。
-        - 新增教师网络，用于蒸馏中的 DKL 计算。
-        - 支持规范化教师观测。
+        """初始化 FSQ-CVAE-based actor-critic 模块，用于 PPO_Distil。
 
         Args:
             obs: 观测字典。
             obs_groups: 观测组映射。
             num_actions: 动作维度。
             motion_run_names: motion group name列表,代表teacher的数量
-            latent_dim: 潜在变量维度（论文推荐 64）。
+            latent_dim: 潜在变量维度（当 levels 未提供时使用）。
+            levels: FSQ 各维量化等级列表，长度决定 latent_dim。
             beta_kl: KL 损失权重（论文推荐 0.1）。
             actor_obs_normalization: 是否规范化 actor 观测。
             critic_obs_normalization: 是否规范化 critic 观测。
@@ -61,18 +61,27 @@ class ActorCritic_CVAE(nn.Module):
             init_noise_std: 初始动作噪声标准差。
             noise_std_type: 噪声类型 ('scalar' 或 'log')。
             normalize_mu: 是否对潜在均值 mu 进行经验规范化。
-            z_scale_factor: z 的缩放因子。
+            z_scale_factor: z 的缩放因子（在量化前施加）。
+            preserve_symmetry: 是否启用 symmetry-preserving FSQ。
+            noise_dropout: FSQ 训练时噪声丢弃比例。
             kwargs: 忽略的额外参数。
         """
         if kwargs:
             print(
-                "ActorCritic_CVAE.__init__ got unexpected arguments, which will be ignored: "
+                "ActorCritic_FSQ_CVAE.__init__ got unexpected arguments, which will be ignored: "
                 + str([key for key in kwargs])
             )
         super().__init__()
 
         self.loaded_teacher = False  # 表示教师是否已加载
-        self.latent_dim = latent_dim
+        if levels is not None:
+            if len(levels) == 0:
+                raise ValueError("levels 不能为空。")
+            self.levels = list(levels)
+            self.latent_dim = len(self.levels)
+        else:
+            self.levels = [8] * latent_dim
+            self.latent_dim = latent_dim
         self.beta_kl = beta_kl  # KL 权重，用于训练
         self.z_scale_factor = z_scale_factor  # z 缩放因子
         self.num_actions = num_actions
@@ -101,15 +110,15 @@ class ActorCritic_CVAE(nn.Module):
 
         # =========== 创建各个网络模块 ============
         # 创建prior网络，input 尺寸为 actor 模块的 obs尺寸，output 尺寸为 2 * latent_dim -> [mu_p, logvar_p]
-        self.prior_network = MLP(num_actor_obs, 2 * latent_dim, prior_hidden_dims, activation)
+        self.prior_network = MLP(num_actor_obs, 2 * self.latent_dim, prior_hidden_dims, activation)
         print(f"Prior Network: {self.prior_network}")
 
         # 创建encoder网络，input 尺寸为 teacher 模块的 obs尺寸，output 尺寸为 2 * latent_dim -> [mu_e, logvar_e]
-        self.encoder_network = MLP(num_teacher_obs, 2 * latent_dim, encoder_hidden_dims, activation)
+        self.encoder_network = MLP(num_teacher_obs, 2 * self.latent_dim, encoder_hidden_dims, activation)
         print(f"Encoder Network: {self.encoder_network}")
         
         # 创建actor(decoder)网络，input 尺寸为 actor 模块的 obs尺寸 + 潜在变量尺寸，output 尺寸为 动作维度
-        self.actor = MLP(num_actor_obs + latent_dim, num_actions, actor_hidden_dims, activation)
+        self.actor = MLP(num_actor_obs + self.latent_dim, num_actions, actor_hidden_dims, activation)
         print(f"Actor(Decoder) MLP: {self.actor}")
 
         # 创建critic网络，input 尺寸为 critic 模块的 obs尺寸，output 尺寸为 1
@@ -132,9 +141,16 @@ class ActorCritic_CVAE(nn.Module):
 
         self.normalize_mu = normalize_mu
         if normalize_mu:
-            self.mu_normalizer = EmpiricalNormalization(latent_dim)  # 潜在维度作为形状
+            self.mu_normalizer = EmpiricalNormalization(self.latent_dim)  # 潜在维度作为形状
         else:
             self.mu_normalizer = nn.Identity()
+
+        # FSQ quantizer
+        self.fsq = FSQQuantizer(
+            levels=self.levels,
+            preserve_symmetry=preserve_symmetry,
+            noise_dropout=noise_dropout,
+        )
         
         # 多教师支持
         self.teacher = nn.ModuleList()
@@ -204,7 +220,23 @@ class ActorCritic_CVAE(nn.Module):
     def _reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
-        return (mu + eps * std) * self.z_scale_factor
+        return mu + eps * std
+
+    def _quantize(self, z_cont: torch.Tensor) -> torch.Tensor:
+        # apply scale before quantization
+        z_cont = z_cont * self.z_scale_factor
+        z_q, _ = self.fsq(z_cont)
+        return z_q
+
+    def _kl_discrete_placeholder(self, q_probs: torch.Tensor, p_probs: torch.Tensor) -> torch.Tensor:
+        # Placeholder for KL(q||p) on discrete codes
+        # TODO
+        return torch.zeros_like(q_probs[..., 0].mean())
+
+    def _kl_indices_ce_placeholder(self, q_indices: torch.Tensor, p_logits: torch.Tensor) -> torch.Tensor:
+        # Placeholder for indices cross-entropy
+        # TODO
+        return torch.zeros_like(q_indices.float().mean())
     
     def _update_distribution(self, actor_obs: torch.Tensor, z: torch.Tensor) -> None:
         if torch.isnan(actor_obs).any():
@@ -236,7 +268,11 @@ class ActorCritic_CVAE(nn.Module):
         self.teacher_distribution = Normal(mean, std)
 
     def _compute_latent_dist(
-        self, student_obs: torch.Tensor, teacher_obs: torch.Tensor, use_prior_only: bool = False, need_kl: bool = False
+        self,
+        student_obs: torch.Tensor,
+        teacher_obs: torch.Tensor,
+        use_prior_only: bool = False,
+        need_kl: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # 先验参数（从单一 MLP 输出分割）
         prior_out = self.prior_network(student_obs)
@@ -244,9 +280,9 @@ class ActorCritic_CVAE(nn.Module):
         logvar_p = logvar_p.clamp(min=-10.0, max=2.0)
 
         # 采样 z
-        if use_prior_only: # train inference和 eval inference 都会走这里,使用prior构建的latent
-            z = self._reparameterize(mu_p, logvar_p)
-        else: # rollout时使用后验构建的latent
+        if use_prior_only:  # train inference和 eval inference 都会走这里,使用prior构建的latent
+            z_cont = self._reparameterize(mu_p, logvar_p)
+        else:  # rollout时使用后验构建的latent
             # 编码器残差参数（从单一 MLP 输出分割）
             encoder_out = self.encoder_network(teacher_obs)
             mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)
@@ -255,9 +291,11 @@ class ActorCritic_CVAE(nn.Module):
             # 后验 mu（residual 设计）
             mu = mu_p + mu_e
             mu = self.mu_normalizer(mu)  # 规范化（如果启用）
-            z = self._reparameterize(mu, logvar_e)
+            z_cont = self._reparameterize(mu, logvar_e)
 
-        if need_kl: # train inference更新kl、
+        z = self._quantize(z_cont)
+
+        if need_kl:  # train inference更新kl、
             # 编码器残差参数（从单一 MLP 输出分割）
             encoder_out = self.encoder_network(teacher_obs)
             mu_e, logvar_e = encoder_out.split(self.latent_dim, dim=-1)

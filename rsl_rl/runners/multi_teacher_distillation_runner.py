@@ -14,6 +14,7 @@ from rsl_rl.runners import OnPolicyRunner, DistillationRunner
 from rsl_rl.storage import RolloutStorage, MultiTeacherDistillationRolloutStorage
 from rsl_rl.modules import (
     ActorCritic_CVAE,
+    ActorCritic_FSQ_CVAE,
     resolve_rnd_config,
     resolve_symmetry_config,
 )
@@ -79,7 +80,7 @@ class MultiTeacherDistillationRunner(DistillationRunner):
         """Construct the distillation algorithm."""
         # Initialize the policy
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
-        student_teacher: ActorCritic_CVAE = student_teacher_class(
+        student_teacher: ActorCritic_CVAE | ActorCritic_FSQ_CVAE = student_teacher_class(
             obs = obs,
             obs_groups = self.cfg["obs_groups"],
             num_actions = self.env.num_actions,

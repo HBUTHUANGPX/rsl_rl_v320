@@ -16,7 +16,7 @@ from .student_multi_teacher import StudentMultiTeacher
 from .symmetry import resolve_symmetry_config
 from .actor_critic_cvae import ActorCritic_CVAE
 from .fsq import FSQQuantizer
-
+from .actor_critic_fsq_cvae import ActorCritic_FSQ_CVAE
 __all__ = [
     "ActorCritic",
     "ActorCriticCNN",
@@ -30,4 +30,5 @@ __all__ = [
     "resolve_rnd_config",
     "resolve_symmetry_config",
     "FSQQuantizer",
+    "ActorCritic_FSQ_CVAE",
 ]

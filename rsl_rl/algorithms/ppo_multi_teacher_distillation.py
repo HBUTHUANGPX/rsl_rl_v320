@@ -11,7 +11,7 @@ import torch.optim as optim
 from itertools import chain
 from tensordict import TensorDict
 
-from rsl_rl.modules import ActorCritic_CVAE,ActorCritic, ActorCriticCNN, ActorCriticRecurrent
+from rsl_rl.modules import ActorCritic_CVAE,ActorCritic_FSQ_CVAE,ActorCritic, ActorCriticCNN, ActorCriticRecurrent
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorage, MultiTeacherDistillationRolloutStorage
 from rsl_rl.utils import string_to_callable
@@ -24,12 +24,12 @@ class PPO_Distil:
     The distillation guides the student policy to match the teacher's action distribution using
     KL divergence (DKL), which is more suitable for Gaussian policies than point-wise MSE.
     """
-    policy: ActorCritic_CVAE
+    policy: ActorCritic_CVAE | ActorCritic_FSQ_CVAE
     """The actor critic module."""
 
     def __init__(
         self,
-        policy: ActorCritic_CVAE,
+        policy: ActorCritic_CVAE | ActorCritic_FSQ_CVAE,
         storage: MultiTeacherDistillationRolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
