@@ -118,7 +118,7 @@ class FSQQuantizer(nn.Module):
             torch.cat(
                 [
                     torch.ones(1, device=z.device, dtype=z.dtype),
-                    self.levels[:-1].to(z.dtype),
+                    self.levels[:-1].to(device=z.device, dtype=z.dtype),
                 ]
             ),
             dim=0,
