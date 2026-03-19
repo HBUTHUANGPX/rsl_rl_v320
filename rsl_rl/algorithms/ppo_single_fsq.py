@@ -17,7 +17,7 @@ from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import string_to_callable
 
 
-class PPO:
+class PPOSingleFSQ:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
     policy: ActorCritic | ActorCriticRecurrent | ActorCriticCNN

@@ -14,7 +14,7 @@ from typing import Any, NoReturn
 from rsl_rl.networks import MLP, EmpiricalNormalization
 
 
-class ActorCritic(nn.Module):
+class ActorCriticSingleFSQ(nn.Module):
     is_recurrent: bool = False
 
     def __init__(

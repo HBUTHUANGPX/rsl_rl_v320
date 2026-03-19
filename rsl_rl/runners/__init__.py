@@ -8,5 +8,5 @@
 from .on_policy_runner import OnPolicyRunner  # noqa: I001
 from .distillation_runner import DistillationRunner
 from .multi_teacher_distillation_runner import MultiTeacherDistillationRunner
-
-__all__ = ["DistillationRunner", "OnPolicyRunner", "MultiTeacherDistillationRunner"]
+from .on_policy_runner_fsq import OnPolicyRunner as OnPolicyRunnerFSQ
+__all__ = ["DistillationRunner", "OnPolicyRunner", "MultiTeacherDistillationRunner", "OnPolicyRunnerFSQ"]
