@@ -12,7 +12,7 @@ from torch.distributions import Normal
 from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
-
+from rsl_rl.modules.vqvae import FrameFSQVAE
 
 class ActorCriticSingleFSQ(nn.Module):
     is_recurrent: bool = False
@@ -48,13 +48,38 @@ class ActorCriticSingleFSQ(nn.Module):
         for obs_group in obs_groups["critic"]:
             assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
             num_critic_obs += obs[obs_group].shape[-1]
+        num_actor_fsq_obs = 0
+        for obs_group in obs_groups["policy_window"]:
+            assert len(obs[obs_group].shape) == 2, "The FSQ module only supports 1D observations."
+            num_actor_fsq_obs += obs[obs_group].shape[-1]
+        num_critic_fsq_obs = 0
+        for obs_group in obs_groups["critic_window"]:
+            assert len(obs[obs_group].shape) == 2, "The FSQ module only supports 1D observations."
+            num_critic_fsq_obs += obs[obs_group].shape[-1]
+
+        # Actor FSQ
+        self.actor_fsq = FrameFSQVAE(
+            encoder_input_dim=num_actor_fsq_obs,
+            decoder_condition_dim=0,
+            target_dim=num_actor_fsq_obs,
+            embedding_dim=32,
+            hidden_dim=256,
+            fsq_levels=16,
+        )# TODO: 重构FSQ模块
+        print(f"Actor FSQ: {self.actor_fsq}")
+        # Actor FSQ observation normalization
+        self.actor_fsq_obs_normalization = actor_obs_normalization
+        if actor_obs_normalization:
+            self.actor_fsq_obs_normalizer = EmpiricalNormalization(num_actor_fsq_obs)
+        else:
+            self.actor_fsq_obs_normalizer = torch.nn.Identity()
 
         # Actor
         self.state_dependent_std = state_dependent_std
         if self.state_dependent_std:
-            self.actor = MLP(num_actor_obs, [2, num_actions], actor_hidden_dims, activation)
+            self.actor = MLP(num_actor_obs + self.actor_fsq.embedding_dim, [2, num_actions], actor_hidden_dims, activation)
         else:
-            self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
+            self.actor = MLP(num_actor_obs + self.actor_fsq.embedding_dim, num_actions, actor_hidden_dims, activation)
         print(f"Actor MLP: {self.actor}")
 
         # Actor observation normalization
@@ -64,8 +89,26 @@ class ActorCriticSingleFSQ(nn.Module):
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
 
+        # Critic FSQ
+        self.critic_fsq = FrameFSQVAE(
+            encoder_input_dim=num_critic_fsq_obs,
+            decoder_condition_dim=0,
+            target_dim=num_critic_fsq_obs,
+            embedding_dim=32,
+            hidden_dim=256,
+            fsq_levels=16,
+        )
+        print(f"Critic FSQ: {self.critic_fsq}")
+
+        # Critic fsq observation normalization
+        self.critic_fsq_obs_normalization = critic_obs_normalization
+        if critic_obs_normalization:
+            self.critic_fsq_obs_normalizer = EmpiricalNormalization(num_critic_fsq_obs)
+        else:
+            self.critic_fsq_obs_normalizer = torch.nn.Identity()
+
         # Critic
-        self.critic = MLP(num_critic_obs, 1, critic_hidden_dims, activation)
+        self.critic = MLP(num_critic_obs + self.critic_fsq.embedding_dim, 1, critic_hidden_dims, activation)
         print(f"Critic MLP: {self.critic}")
 
         # Critic observation normalization
@@ -148,34 +191,60 @@ class ActorCriticSingleFSQ(nn.Module):
         self.distribution = Normal(mean, std)
 
     def act(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
-        obs = self.get_actor_obs(obs)
-        obs = self.actor_obs_normalizer(obs)
-        self._update_distribution(obs)
-        return self.distribution.sample()
+        actor_obs = self.get_actor_obs(obs)
+        actor_obs = self.actor_obs_normalizer(actor_obs)
+        actor_fsq_obs = self.get_actor_fsq_obs(obs)
+        actor_fsq_obs = self.actor_fsq_obs_normalizer(actor_fsq_obs)
+
+        if kwargs.get("reconstruct", False):
+            fsq_out = self.actor_fsq.forward(actor_fsq_obs, decoder_condition=None)
+            obs = torch.cat((actor_obs, fsq_out["z_q"]), dim=-1)
+            self._update_distribution(obs)
+            return {
+                "action": self.distribution.sample(),
+                "fsq_out": self.actor_fsq.loss_function(actor_fsq_obs, fsq_out),
+            }
+        else:
+            fsq_out = self.actor_fsq.encoder_forward(actor_fsq_obs)
+            obs = torch.cat((actor_obs, fsq_out["z_q"]), dim=-1)
+            self._update_distribution(obs)
+            return self.distribution.sample()
 
     def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
-        obs = self.get_actor_obs(obs)
-        obs = self.actor_obs_normalizer(obs)
+        actor_obs = self.get_actor_obs(obs)
+        actor_obs = self.actor_obs_normalizer(actor_obs)
+        actor_fsq_obs = self.get_actor_fsq_obs(obs)
+        actor_fsq_obs = self.actor_fsq_obs_normalizer(actor_fsq_obs)
+        fsq_out = self.actor_fsq.encoder_forward(actor_fsq_obs)
+        obs = torch.cat((actor_obs, fsq_out["z_q"]), dim=-1)
         if self.state_dependent_std:
             return self.actor(obs)[..., 0, :]
         else:
             return self.actor(obs)
 
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
-        obs = self.get_critic_obs(obs)
-        obs = self.critic_obs_normalizer(obs)
+        critic_obs = self.get_critic_obs(obs)
+        critic_obs = self.critic_obs_normalizer(critic_obs)
+        critic_fsq_obs = self.get_critic_fsq_obs(obs)
+        critic_fsq_obs = self.critic_fsq_obs_normalizer(critic_fsq_obs)
+        fsq_out = self.critic_fsq.encoder_forward(critic_fsq_obs)
+        obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
         return self.critic(obs)
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
-        obs_list = []
-        for obs_group in self.obs_groups["policy"]:
-            if torch.isnan(obs[obs_group]).any():
-                raise ValueError(f"{obs_group} 张量中存在 NaN 值")
-            obs_list.append(obs[obs_group])
-        return torch.cat(obs_list, dim=-1)
+        return self.get_obs(obs, "policy")
 
     def get_critic_obs(self, obs: TensorDict) -> torch.Tensor:
-        obs_list = [obs[obs_group] for obs_group in self.obs_groups["critic"]]
+        return self.get_obs(obs, "critic")
+
+    def get_actor_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
+        return self.get_obs(obs, "policy_window")
+
+    def get_critic_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
+        return self.get_obs(obs, "critic_window")
+
+    def get_obs(self, obs: TensorDict, name: str) -> torch.Tensor:
+        obs_list = [obs[obs_group] for obs_group in self.obs_groups[name]]
         return torch.cat(obs_list, dim=-1)
 
     def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
@@ -188,6 +257,12 @@ class ActorCriticSingleFSQ(nn.Module):
         if self.critic_obs_normalization:
             critic_obs = self.get_critic_obs(obs)
             self.critic_obs_normalizer.update(critic_obs)
+        if self.actor_fsq_obs_normalization:
+            actor_fsq_obs = self.get_actor_fsq_obs(obs)
+            self.actor_fsq_obs_normalizer.update(actor_fsq_obs)
+        if self.critic_fsq_obs_normalization:
+            critic_fsq_obs = self.get_critic_fsq_obs(obs)
+            self.critic_fsq_obs_normalizer.update(critic_fsq_obs)
 
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         """Load the parameters of the actor-critic model.

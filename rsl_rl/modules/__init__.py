@@ -18,6 +18,7 @@ from .actor_critic_cvae import ActorCritic_CVAE
 from .fsq import FSQQuantizer
 from .actor_critic_fsq_cvae import ActorCritic_FSQ_CVAE
 from .actor_critic_single_fsq import ActorCriticSingleFSQ
+from .vqvae import FrameFSQVAE
 __all__ = [
     "ActorCritic",
     "ActorCriticSingleFSQ",
@@ -33,4 +34,5 @@ __all__ = [
     "resolve_symmetry_config",
     "FSQQuantizer",
     "ActorCritic_FSQ_CVAE",
+    "FrameFSQVAE"
 ]

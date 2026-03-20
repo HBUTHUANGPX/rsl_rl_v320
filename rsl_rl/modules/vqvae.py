@@ -112,7 +112,7 @@ class _FrameQuantizedAutoencoderBase(nn.Module):
     def _forward_with_quantizer(
         self,
         encoder_input: torch.Tensor,
-        decoder_condition: torch.Tensor,
+        decoder_condition: torch.Tensor | None,
         quantizer: nn.Module,
     ) -> Dict[str, torch.Tensor]:
         """Runs shared forward pipeline with a pluggable quantizer.
@@ -127,7 +127,10 @@ class _FrameQuantizedAutoencoderBase(nn.Module):
         """
         z_e = self.encoder(encoder_input)
         q = quantizer(z_e)
-        decoder_input = torch.cat([q["z_q"], decoder_condition], dim=1)
+        if decoder_condition is not None:
+            decoder_input = torch.cat([q["z_q"], decoder_condition], dim=1)
+        else:
+            decoder_input = q["z_q"]
         x_hat = self.decoder(decoder_input)
         output = {
             "x_hat": x_hat,
@@ -137,6 +140,31 @@ class _FrameQuantizedAutoencoderBase(nn.Module):
         output.update(q)
         return output
 
+    def _encoder_forward_with_quantizer(
+        self,
+        encoder_input: torch.Tensor,
+        quantizer: nn.Module,
+    ) -> Dict[str, torch.Tensor]:
+        """Runs encoder and quantizer forward pass without decoding.
+
+        This can be used for tasks like representation learning or quantized
+        embedding extraction where the decoder is not needed.
+
+        Args:
+            encoder_input: Encoder input tensor ``[B, D_enc]``.
+            quantizer: Quantizer module implementing ``forward(z_e)``.
+
+        Returns:
+            Forward output dictionary with quantization terms.
+        """
+        z_e = self.encoder(encoder_input)
+        q = quantizer(z_e)
+        output = {
+            "z_e": z_e,
+        }
+        # Merge quantizer-specific outputs so VQ and FSQ can expose different metrics.
+        output.update(q)
+        return output
 
 class FrameVQVAE(_FrameQuantizedAutoencoderBase):
     """Vector-quantized autoencoder with conditional decoder."""
@@ -267,7 +295,7 @@ class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
     def forward(
         self,
         encoder_input: torch.Tensor,
-        decoder_condition: torch.Tensor,
+        decoder_condition: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
         """Runs FSQ-VAE forward pass.
 
@@ -281,6 +309,23 @@ class FrameFSQVAE(_FrameQuantizedAutoencoderBase):
         return self._forward_with_quantizer(
             encoder_input=encoder_input,
             decoder_condition=decoder_condition,
+            quantizer=self.quantizer,
+        )
+    
+    def encoder_forward(
+        self,
+        encoder_input: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Runs encoder forward pass.
+
+        Args:
+            encoder_input: Encoder input tensor with shape ``[B, D_enc]``.
+
+        Returns:
+            Dictionary with encoder outputs.
+        """
+        return self._encoder_forward_with_quantizer(
+            encoder_input=encoder_input,
             quantizer=self.quantizer,
         )
 
