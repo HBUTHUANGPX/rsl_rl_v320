@@ -13,6 +13,10 @@ from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 from rsl_rl.modules.vqvae import FrameFSQVAE
+import os
+import onnx
+import copy
+
 
 class ActorCriticSingleFSQ(nn.Module):
     is_recurrent: bool = False
@@ -34,7 +38,8 @@ class ActorCriticSingleFSQ(nn.Module):
     ) -> None:
         if kwargs:
             print(
-                "ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs])
+                "ActorCritic.__init__ got unexpected arguments, which will be ignored: "
+                + str([key for key in kwargs])
             )
         super().__init__()
 
@@ -42,30 +47,41 @@ class ActorCriticSingleFSQ(nn.Module):
         self.obs_groups = obs_groups
         num_actor_obs = 0
         for obs_group in obs_groups["policy"]:
-            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
+            assert (
+                len(obs[obs_group].shape) == 2
+            ), "The ActorCritic module only supports 1D observations."
             num_actor_obs += obs[obs_group].shape[-1]
         num_critic_obs = 0
         for obs_group in obs_groups["critic"]:
-            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
+            assert (
+                len(obs[obs_group].shape) == 2
+            ), "The ActorCritic module only supports 1D observations."
             num_critic_obs += obs[obs_group].shape[-1]
         num_actor_fsq_obs = 0
         for obs_group in obs_groups["policy_window"]:
-            assert len(obs[obs_group].shape) == 2, "The FSQ module only supports 1D observations."
+            assert (
+                len(obs[obs_group].shape) == 2
+            ), "The FSQ module only supports 1D observations."
             num_actor_fsq_obs += obs[obs_group].shape[-1]
         num_critic_fsq_obs = 0
         for obs_group in obs_groups["critic_window"]:
-            assert len(obs[obs_group].shape) == 2, "The FSQ module only supports 1D observations."
+            assert (
+                len(obs[obs_group].shape) == 2
+            ), "The FSQ module only supports 1D observations."
             num_critic_fsq_obs += obs[obs_group].shape[-1]
 
         # Actor FSQ
+        self.fsq_embedding_dim = 32
+        self.fsq_hidden_dim = 256
+        self.fsq_levels = 16
         self.actor_fsq = FrameFSQVAE(
             encoder_input_dim=num_actor_fsq_obs,
             decoder_condition_dim=0,
             target_dim=num_actor_fsq_obs,
-            embedding_dim=32,
-            hidden_dim=256,
-            fsq_levels=16,
-        )# TODO: 重构FSQ模块
+            embedding_dim=self.fsq_embedding_dim,
+            hidden_dim=self.fsq_hidden_dim,
+            fsq_levels=self.fsq_levels,
+        )  # TODO: 重构FSQ模块
         print(f"Actor FSQ: {self.actor_fsq}")
         # Actor FSQ observation normalization
         self.actor_fsq_obs_normalization = actor_obs_normalization
@@ -77,9 +93,19 @@ class ActorCriticSingleFSQ(nn.Module):
         # Actor
         self.state_dependent_std = state_dependent_std
         if self.state_dependent_std:
-            self.actor = MLP(num_actor_obs + self.actor_fsq.embedding_dim, [2, num_actions], actor_hidden_dims, activation)
+            self.actor = MLP(
+                num_actor_obs + self.actor_fsq.embedding_dim,
+                [2, num_actions],
+                actor_hidden_dims,
+                activation,
+            )
         else:
-            self.actor = MLP(num_actor_obs + self.actor_fsq.embedding_dim, num_actions, actor_hidden_dims, activation)
+            self.actor = MLP(
+                num_actor_obs + self.actor_fsq.embedding_dim,
+                num_actions,
+                actor_hidden_dims,
+                activation,
+            )
         print(f"Actor MLP: {self.actor}")
 
         # Actor observation normalization
@@ -108,7 +134,12 @@ class ActorCriticSingleFSQ(nn.Module):
             self.critic_fsq_obs_normalizer = torch.nn.Identity()
 
         # Critic
-        self.critic = MLP(num_critic_obs + self.critic_fsq.embedding_dim, 1, critic_hidden_dims, activation)
+        self.critic = MLP(
+            num_critic_obs + self.critic_fsq.embedding_dim,
+            1,
+            critic_hidden_dims,
+            activation,
+        )
         print(f"Critic MLP: {self.critic}")
 
         # Critic observation normalization
@@ -123,20 +154,29 @@ class ActorCriticSingleFSQ(nn.Module):
         if self.state_dependent_std:
             torch.nn.init.zeros_(self.actor[-2].weight[num_actions:])
             if self.noise_std_type == "scalar":
-                torch.nn.init.constant_(self.actor[-2].bias[num_actions:], init_noise_std)
+                torch.nn.init.constant_(
+                    self.actor[-2].bias[num_actions:], init_noise_std
+                )
             elif self.noise_std_type == "log":
                 torch.nn.init.constant_(
-                    self.actor[-2].bias[num_actions:], torch.log(torch.tensor(init_noise_std + 1e-7))
+                    self.actor[-2].bias[num_actions:],
+                    torch.log(torch.tensor(init_noise_std + 1e-7)),
                 )
             else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+                raise ValueError(
+                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+                )
         else:
             if self.noise_std_type == "scalar":
                 self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
             elif self.noise_std_type == "log":
-                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+                self.log_std = nn.Parameter(
+                    torch.log(init_noise_std * torch.ones(num_actions))
+                )
             else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+                raise ValueError(
+                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+                )
 
         # Action distribution
         # Note: Populated in update_distribution
@@ -175,7 +215,9 @@ class ActorCriticSingleFSQ(nn.Module):
                 mean, log_std = torch.unbind(mean_and_std, dim=-2)
                 std = torch.exp(log_std)
             else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+                raise ValueError(
+                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+                )
         else:
             # Compute mean
             mean = self.actor(obs)
@@ -186,7 +228,9 @@ class ActorCriticSingleFSQ(nn.Module):
                 std = torch.exp(self.log_std).expand_as(mean)
                 # print("[INFO] use log_std")
             else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+                raise ValueError(
+                    f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+                )
         # Create distribution
         self.distribution = Normal(mean, std)
 
@@ -278,3 +322,68 @@ class ActorCriticSingleFSQ(nn.Module):
         """
         super().load_state_dict(state_dict, strict=strict)
         return True
+
+    def export_policy_as_onnx(
+        self,
+        env,
+        path: str,
+        filename: str = "policy.onnx",
+        verbose: bool = False,
+    ) -> None:
+
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+
+        class _OnnxPolicyExporter(torch.nn.Module):
+            def __init__(self, env, actor_critic: ActorCriticSingleFSQ, verbose=False):
+                super().__init__()
+                self.verbose = verbose
+                self.actor_input_dim = actor_critic.actor[0].in_features - actor_critic.actor_fsq.embedding_dim
+                self.actor_fsq_input_dim = actor_critic.actor_fsq.encoder_input_dim
+
+                
+                self.actor_fsq_encoder = copy.deepcopy(actor_critic.actor_fsq.encoder)
+                self.actor = copy.deepcopy(actor_critic.actor)
+                self.actor_obs_normalizer = copy.deepcopy(
+                    actor_critic.actor_obs_normalizer
+                )
+                self.actor_fsq_obs_normalizer = copy.deepcopy(
+                    actor_critic.actor_fsq_obs_normalizer
+                )
+                self.actor_fsq_quantizer = copy.deepcopy(
+                    actor_critic.actor_fsq.quantizer
+                )
+                
+            def forward(self, actor_obs, actor_fsq_obs):
+                actor_obs = self.actor_obs_normalizer(actor_obs)
+                actor_fsq_obs = self.actor_fsq_obs_normalizer(actor_fsq_obs)
+                fsq_z_e = self.actor_fsq_encoder(actor_fsq_obs)
+                fsq_z_q = self.actor_fsq_quantizer(fsq_z_e)["z_q"]
+                obs = torch.cat((actor_obs, fsq_z_q), dim=-1)
+                actions = self.actor(obs)
+                return actions
+
+            def export(self, path, filename):
+                self.to("cpu")
+                actor_obs = torch.zeros(
+                    1, self.actor_input_dim
+                ) 
+                actor_fsq_obs = torch.zeros(
+                    1, self.actor_fsq_input_dim
+                ) 
+                torch.onnx.export(
+                    self,
+                    (actor_obs, actor_fsq_obs),
+                    os.path.join(path, filename),
+                    export_params=True,
+                    opset_version=11,
+                    verbose=self.verbose,
+                    input_names=["actor_obs", "actor_fsq_obs"],
+                    output_names=[
+                        "actions"
+                    ],
+                    dynamic_axes={},
+                )
+
+        exporter = _OnnxPolicyExporter(env, self, verbose)
+        exporter.export(path, filename)
