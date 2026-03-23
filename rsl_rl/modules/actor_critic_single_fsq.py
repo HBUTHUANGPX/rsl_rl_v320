@@ -115,27 +115,9 @@ class ActorCriticSingleFSQ(nn.Module):
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
 
-        # Critic FSQ
-        self.critic_fsq = FrameFSQVAE(
-            encoder_input_dim=num_critic_fsq_obs,
-            decoder_condition_dim=0,
-            target_dim=num_critic_fsq_obs,
-            embedding_dim=32,
-            hidden_dim=256,
-            fsq_levels=16,
-        )
-        print(f"Critic FSQ: {self.critic_fsq}")
-
-        # Critic fsq observation normalization
-        self.critic_fsq_obs_normalization = critic_obs_normalization
-        if critic_obs_normalization:
-            self.critic_fsq_obs_normalizer = EmpiricalNormalization(num_critic_fsq_obs)
-        else:
-            self.critic_fsq_obs_normalizer = torch.nn.Identity()
-
         # Critic
         self.critic = MLP(
-            num_critic_obs + self.critic_fsq.embedding_dim,
+            num_critic_obs,
             1,
             critic_hidden_dims,
             activation,
@@ -269,11 +251,7 @@ class ActorCriticSingleFSQ(nn.Module):
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         critic_obs = self.get_critic_obs(obs)
         critic_obs = self.critic_obs_normalizer(critic_obs)
-        critic_fsq_obs = self.get_critic_fsq_obs(obs)
-        critic_fsq_obs = self.critic_fsq_obs_normalizer(critic_fsq_obs)
-        fsq_out = self.critic_fsq.encoder_forward(critic_fsq_obs)
-        obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
-        return self.critic(obs)
+        return self.critic(critic_obs)
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
         return self.get_obs(obs, "policy")
@@ -304,9 +282,6 @@ class ActorCriticSingleFSQ(nn.Module):
         if self.actor_fsq_obs_normalization:
             actor_fsq_obs = self.get_actor_fsq_obs(obs)
             self.actor_fsq_obs_normalizer.update(actor_fsq_obs)
-        if self.critic_fsq_obs_normalization:
-            critic_fsq_obs = self.get_critic_fsq_obs(obs)
-            self.critic_fsq_obs_normalizer.update(critic_fsq_obs)
 
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         """Load the parameters of the actor-critic model.
