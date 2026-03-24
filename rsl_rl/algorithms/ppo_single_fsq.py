@@ -195,6 +195,7 @@ class PPOSingleFSQ:
         mean_surrogate_loss = 0
         mean_entropy = 0
         mean_robot_motion_fsq_loss = 0
+        mean_robot_motion_fsq_c_loss = 0
         # RND loss
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
@@ -249,7 +250,8 @@ class PPOSingleFSQ:
             # Note: We need to do this because we updated the policy with the new parameters
             out = self.policy.act(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[0], reconstruct=True)
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
-            value_batch = self.policy.evaluate(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[1])
+            out_critic = self.policy.evaluate(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[1], reconstruct=True)
+            value_batch = out_critic["value"]
             # Note: We only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
             sigma_batch = self.policy.action_std[:original_batch_size]
@@ -310,7 +312,13 @@ class PPOSingleFSQ:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean() + out["fsq_out"]["loss"]
+            loss = (
+                surrogate_loss
+                + self.value_loss_coef * value_loss
+                - self.entropy_coef * entropy_batch.mean()
+                + out["fsq_out"]["loss"]
+                + out_critic["fsq_out"]["loss"]
+            )
 
             # Symmetry loss
             if self.symmetry:
@@ -384,6 +392,7 @@ class PPOSingleFSQ:
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
             mean_robot_motion_fsq_loss += out["fsq_out"]["loss"].item()
+            mean_robot_motion_fsq_c_loss += out_critic["fsq_out"]["loss"].item()
             # RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -397,6 +406,7 @@ class PPOSingleFSQ:
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
         mean_robot_motion_fsq_loss /= num_updates
+        mean_robot_motion_fsq_c_loss /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
@@ -411,6 +421,7 @@ class PPOSingleFSQ:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "robot_motion_fsq": mean_robot_motion_fsq_loss,
+            "robot_motion_fsq_c": mean_robot_motion_fsq_c_loss,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
