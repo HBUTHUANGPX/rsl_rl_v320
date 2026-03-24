@@ -274,7 +274,6 @@ class ActorCriticSingleFSQ(nn.Module):
         if kwargs.get("reconstruct", False):
             fsq_out = self.critic_fsq.forward(critic_fsq_obs,decoder_condition=None)
             obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
-            self._update_distribution(obs)
             return {
                         "value": self.critic(obs),
                         "fsq_out": self.critic_fsq.loss_function(critic_fsq_obs, fsq_out),
