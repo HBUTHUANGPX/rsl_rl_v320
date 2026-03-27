@@ -312,12 +312,15 @@ class PPOSingleFSQ:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
+            actor_robot_motion_fsq_recon_loss  = out["fsq_out"]["loss"]
+            critic_robot_motion_fsq_recon_loss = out_critic["fsq_out"]["loss"]
+
             loss = (
                 surrogate_loss
                 + self.value_loss_coef * value_loss
                 - self.entropy_coef * entropy_batch.mean()
-                + out["fsq_out"]["loss"]
-                + out_critic["fsq_out"]["loss"]
+                + actor_robot_motion_fsq_recon_loss * 0.01
+                + critic_robot_motion_fsq_recon_loss * 0.005
             )
 
             # Symmetry loss
@@ -391,8 +394,8 @@ class PPOSingleFSQ:
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
-            mean_robot_motion_fsq_loss += out["fsq_out"]["loss"].item()
-            mean_robot_motion_fsq_c_loss += out_critic["fsq_out"]["loss"].item()
+            mean_robot_motion_fsq_loss += actor_robot_motion_fsq_recon_loss.item()
+            mean_robot_motion_fsq_c_loss += critic_robot_motion_fsq_recon_loss.item()
             # RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
