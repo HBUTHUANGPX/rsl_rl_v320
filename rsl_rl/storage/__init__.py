@@ -7,4 +7,5 @@
 
 from .rollout_storage import RolloutStorage
 from .multi_teacher_distillation_rollout_storage import MultiTeacherDistillationRolloutStorage
-__all__ = ["RolloutStorage", "MultiTeacherDistillationRolloutStorage"]
+from .rl_distillation_rollout_storage import RLDistillationRolloutStorage
+__all__ = ["RolloutStorage", "MultiTeacherDistillationRolloutStorage", "RLDistillationRolloutStorage"]

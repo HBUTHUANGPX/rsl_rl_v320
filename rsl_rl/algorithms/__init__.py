@@ -10,4 +10,5 @@ from .ppo import PPO
 from .multi_teacher_distillation import MultiTeacherDistillation
 from .ppo_multi_teacher_distillation import PPO_Distil
 from .ppo_single_fsq import PPOSingleFSQ
-__all__ = ["PPO", "PPOSingleFSQ", "Distillation", "MultiTeacherDistillation", "PPO_Distil"]
+from .ppo_single_fsq_distillation import PPOSingleFSQDistillation
+__all__ = ["PPO", "PPOSingleFSQ", "Distillation", "MultiTeacherDistillation", "PPO_Distil", "PPOSingleFSQDistillation"]
