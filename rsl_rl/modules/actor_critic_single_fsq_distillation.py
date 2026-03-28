@@ -182,8 +182,12 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         else:
             if self.noise_std_type == "scalar":
                 self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+                self.teacher_std = nn.Parameter(init_noise_std * torch.ones(num_actions))
             elif self.noise_std_type == "log":
                 self.log_std = nn.Parameter(
+                    torch.log(init_noise_std * torch.ones(num_actions))
+                )
+                self.teacher_log_std = nn.Parameter(
                     torch.log(init_noise_std * torch.ones(num_actions))
                 )
             else:
@@ -279,9 +283,9 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             mean = self.teacher(obs)
             # Compute standard deviation
             if self.noise_std_type == "scalar":
-                std = self.std.expand_as(mean)
+                std = self.teacher_std.expand_as(mean)
             elif self.noise_std_type == "log":
-                std = torch.exp(self.log_std).expand_as(mean)
+                std = torch.exp(self.teacher_log_std).expand_as(mean)
                 # print("[INFO] use log_std")
             else:
                 raise ValueError(
