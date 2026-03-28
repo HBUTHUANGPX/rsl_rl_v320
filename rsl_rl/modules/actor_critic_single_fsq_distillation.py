@@ -182,13 +182,13 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         else:
             if self.noise_std_type == "scalar":
                 self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-                self.teacher_std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+                self.teacher_std = nn.Parameter(init_noise_std * torch.ones(num_actions),requires_grad=False)
             elif self.noise_std_type == "log":
                 self.log_std = nn.Parameter(
                     torch.log(init_noise_std * torch.ones(num_actions))
                 )
                 self.teacher_log_std = nn.Parameter(
-                    torch.log(init_noise_std * torch.ones(num_actions))
+                    torch.log(init_noise_std * torch.ones(num_actions),requires_grad=False)
                 )
             else:
                 raise ValueError(
