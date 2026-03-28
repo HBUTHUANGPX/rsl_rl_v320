@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from rsl_rl.networks import MLP
+
 from .quantizers import FSQQuantizer
+
+
+@dataclass(slots=True)
+class FSQEncodeOutput:
+    z_e: torch.Tensor
+    z_q: torch.Tensor
+    indices: torch.Tensor
+    level_histogram: torch.Tensor
+    per_dim_usage: torch.Tensor
+    avg_utilization: torch.Tensor
+    effective_bits: torch.Tensor
+    effective_bits_entropy: torch.Tensor
+
+
+@dataclass(slots=True)
+class FSQLossOutput:
+    loss: torch.Tensor
+    recon_loss: torch.Tensor
+    x_hat: torch.Tensor
+    encode: FSQEncodeOutput
 
 
 class FSQMLPEncoder(nn.Module):
@@ -16,18 +39,18 @@ class FSQMLPEncoder(nn.Module):
         self,
         input_dim: int,
         embedding_dim: int = 32,
-        hidden_dim: int = 256,
+        hidden_dims: Sequence[int] = (256, 256),
+        activation: str = "relu",
     ) -> None:
         super().__init__()
         self.input_dim = int(input_dim)
         self.embedding_dim = int(embedding_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.network = nn.Sequential(
-            nn.Linear(self.input_dim, self.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_dim, self.embedding_dim),
+        self.hidden_dims = tuple(int(dim) for dim in hidden_dims)
+        self.network = MLP(
+            self.input_dim,
+            self.embedding_dim,
+            self.hidden_dims,
+            activation,
         )
 
     def forward(self, encoder_input: torch.Tensor) -> torch.Tensor:
@@ -42,19 +65,19 @@ class FSQMLPDecoder(nn.Module):
         latent_dim: int,
         target_dim: int,
         condition_dim: int = 0,
-        hidden_dim: int = 256,
+        hidden_dims: Sequence[int] = (256, 256),
+        activation: str = "relu",
     ) -> None:
         super().__init__()
         self.latent_dim = int(latent_dim)
         self.target_dim = int(target_dim)
         self.condition_dim = int(condition_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.network = nn.Sequential(
-            nn.Linear(self.latent_dim + self.condition_dim, self.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_dim, self.target_dim),
+        self.hidden_dims = tuple(int(dim) for dim in hidden_dims)
+        self.network = MLP(
+            self.latent_dim + self.condition_dim,
+            self.target_dim,
+            self.hidden_dims,
+            activation,
         )
 
     def forward(
@@ -85,25 +108,27 @@ class FSQBranch(nn.Module):
         self,
         encoder_input: torch.Tensor,
         detach_quantized: bool = False,
-    ) -> dict[str, torch.Tensor]:
+    ) -> FSQEncodeOutput:
         z_e = self.encoder(encoder_input)
         q_out = self.quantizer(z_e)
-        if detach_quantized:
-            q_out = dict(q_out)
-            q_out["z_q"] = q_out["z_q"].detach()
-        outputs = {"z_e": z_e}
-        outputs.update(q_out)
-        return outputs
+        z_q = q_out["z_q"].detach() if detach_quantized else q_out["z_q"]
+        return FSQEncodeOutput(
+            z_e=z_e,
+            z_q=z_q,
+            indices=q_out["indices"],
+            level_histogram=q_out["level_histogram"],
+            per_dim_usage=q_out["per_dim_usage"],
+            avg_utilization=q_out["avg_utilization"],
+            effective_bits=q_out["effective_bits"],
+            effective_bits_entropy=q_out["effective_bits_entropy"],
+        )
 
     def latent_for_policy(
         self,
         encoder_input: torch.Tensor,
         detach: bool = True,
     ) -> torch.Tensor:
-        return self.encode(
-            encoder_input=encoder_input,
-            detach_quantized=detach,
-        )["z_q"]
+        return self.encode(encoder_input=encoder_input, detach_quantized=detach).z_q
 
 
 class FSQReconstructionHead(nn.Module):
@@ -118,13 +143,9 @@ class FSQReconstructionHead(nn.Module):
 
     def decode(
         self,
-        latents: list[torch.Tensor] | tuple[torch.Tensor, ...] | torch.Tensor,
+        latent: torch.Tensor,
         condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if isinstance(latents, torch.Tensor):
-            latent = latents
-        else:
-            latent = torch.cat(tuple(latents), dim=-1)
         return self.decoder(latent, condition)
 
     def reconstruction_loss(
@@ -144,8 +165,9 @@ class FSQAutoEncoder(nn.Module):
         target_dim: int,
         decoder_condition_dim: int = 0,
         embedding_dim: int = 32,
-        hidden_dim: int = 256,
+        hidden_dims: Sequence[int] = (256, 256),
         fsq_levels: int = 8,
+        activation: str = "relu",
         quantizer: nn.Module | None = None,
     ) -> None:
         super().__init__()
@@ -157,7 +179,8 @@ class FSQAutoEncoder(nn.Module):
             encoder=FSQMLPEncoder(
                 input_dim=self.encoder_input_dim,
                 embedding_dim=self.embedding_dim,
-                hidden_dim=hidden_dim,
+                hidden_dims=hidden_dims,
+                activation=activation,
             ),
             quantizer=quantizer if quantizer is not None else FSQQuantizer(levels=int(fsq_levels)),
         )
@@ -166,7 +189,8 @@ class FSQAutoEncoder(nn.Module):
                 latent_dim=self.embedding_dim,
                 target_dim=self.target_dim,
                 condition_dim=self.decoder_condition_dim,
-                hidden_dim=hidden_dim,
+                hidden_dims=hidden_dims[::-1],
+                activation=activation,
             ),
         )
 
@@ -186,16 +210,15 @@ class FSQAutoEncoder(nn.Module):
         self,
         encoder_input: torch.Tensor,
         decoder_condition: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        outputs = self.branch.encode(encoder_input)
-        outputs["x_hat"] = self.decoder_head.decode(outputs["z_q"], decoder_condition)
-        return outputs
+    ) -> tuple[FSQEncodeOutput, torch.Tensor]:
+        encode = self.branch.encode(encoder_input)
+        return encode, self.decoder_head.decode(encode.z_q, decoder_condition)
 
     def encoder_forward(
         self,
         encoder_input: torch.Tensor,
         detach_quantized: bool = False,
-    ) -> dict[str, torch.Tensor]:
+    ) -> FSQEncodeOutput:
         return self.branch.encode(
             encoder_input=encoder_input,
             detach_quantized=detach_quantized,
@@ -208,40 +231,16 @@ class FSQAutoEncoder(nn.Module):
     ) -> torch.Tensor:
         return self.branch.latent_for_policy(encoder_input, detach=detach)
 
-    def loss_function(
-        self,
-        target: torch.Tensor,
-        outputs: dict[str, torch.Tensor],
-    ) -> dict[str, torch.Tensor]:
-        recon = self.decoder_head.reconstruction_loss(outputs["x_hat"], target)
-        loss_dict = {
-            "loss": recon,
-            "recon_loss": recon,
-        }
-        for key in (
-            "effective_bits",
-            "effective_bits_entropy",
-            "avg_utilization",
-            "level_histogram",
-            "per_dim_usage",
-            "indices",
-            "z_q",
-            "z_e",
-            "x_hat",
-        ):
-            if key in outputs:
-                loss_dict[key] = outputs[key]
-        return loss_dict
-
     def compute_loss(
         self,
         target: torch.Tensor,
         decoder_condition: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        outputs = self.forward(target, decoder_condition=decoder_condition)
-        return self.loss_function(target, outputs)
-
-    @classmethod
-    def from_config(cls, **kwargs: Any) -> "FSQAutoEncoder":
-        """Small helper to mirror config-driven construction in policies."""
-        return cls(**kwargs)
+    ) -> FSQLossOutput:
+        encode, x_hat = self.forward(target, decoder_condition=decoder_condition)
+        recon = self.decoder_head.reconstruction_loss(x_hat, target)
+        return FSQLossOutput(
+            loss=recon,
+            recon_loss=recon,
+            x_hat=x_hat,
+            encode=encode,
+        )

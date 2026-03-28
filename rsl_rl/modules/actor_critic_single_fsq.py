@@ -12,7 +12,7 @@ from torch.distributions import Normal
 from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
-from rsl_rl.modules.vqvae import FrameFSQVAE
+from rsl_rl.modules.fsq_components import FSQAutoEncoder
 import os
 import onnx
 import copy
@@ -72,15 +72,16 @@ class ActorCriticSingleFSQ(nn.Module):
 
         # Actor FSQ
         self.fsq_embedding_dim = 32
-        self.fsq_hidden_dim = 256
+        self.fsq_hidden_dims = [256, 256]
         self.fsq_levels = 16
-        self.actor_fsq = FrameFSQVAE(
+        self.actor_fsq = FSQAutoEncoder(
             encoder_input_dim=num_actor_fsq_obs,
-            decoder_condition_dim=0,
             target_dim=num_actor_fsq_obs,
+            decoder_condition_dim=0,
             embedding_dim=self.fsq_embedding_dim,
-            hidden_dim=self.fsq_hidden_dim,
+            hidden_dims=self.fsq_hidden_dims,
             fsq_levels=self.fsq_levels,
+            activation=activation,
         )  # TODO: 重构FSQ模块
         print(f"Actor FSQ: {self.actor_fsq}")
         # Actor FSQ observation normalization
@@ -116,13 +117,14 @@ class ActorCriticSingleFSQ(nn.Module):
             self.actor_obs_normalizer = torch.nn.Identity()
 
         # Critic FSQ
-        self.critic_fsq = FrameFSQVAE(
+        self.critic_fsq = FSQAutoEncoder(
             encoder_input_dim=num_critic_fsq_obs,
-            decoder_condition_dim=0,
             target_dim=num_critic_fsq_obs,
+            decoder_condition_dim=0,
             embedding_dim=32,
-            hidden_dim=256,
+            hidden_dims=[256, 256],
             fsq_levels=16,
+            activation=activation,
         )
         print(f"Critic FSQ: {self.critic_fsq}")
 
@@ -237,30 +239,28 @@ class ActorCriticSingleFSQ(nn.Module):
     def act(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
-        actor_fsq_obs = self.get_actor_fsq_obs(obs)
-        actor_fsq_obs = self.actor_fsq_obs_normalizer(actor_fsq_obs)
+        actor_fsq_obs = self.get_actor_fsq_obs_normalized(obs)
 
         if kwargs.get("reconstruct", False):
-            fsq_out = self.actor_fsq.forward(actor_fsq_obs, decoder_condition=None)
-            obs = torch.cat((actor_obs, fsq_out["z_q"]), dim=-1)
+            fsq_out = self.actor_fsq.compute_loss(actor_fsq_obs, decoder_condition=None)
+            obs = torch.cat((actor_obs, fsq_out.encode.z_q), dim=-1)
             self._update_distribution(obs)
             return {
                 "action": self.distribution.sample(),
-                "fsq_out": self.actor_fsq.loss_function(actor_fsq_obs, fsq_out),
+                "fsq_out": fsq_out,
             }
         else:
-            fsq_out = self.actor_fsq.encoder_forward(actor_fsq_obs)
-            obs = torch.cat((actor_obs, fsq_out["z_q"]), dim=-1)
+            actor_latent = self.actor_fsq.latent_for_policy(actor_fsq_obs, detach=False)
+            obs = torch.cat((actor_obs, actor_latent), dim=-1)
             self._update_distribution(obs)
             return self.distribution.sample()
 
     def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
-        actor_fsq_obs = self.get_actor_fsq_obs(obs)
-        actor_fsq_obs = self.actor_fsq_obs_normalizer(actor_fsq_obs)
-        fsq_out = self.actor_fsq.encoder_forward(actor_fsq_obs)
-        obs = torch.cat((actor_obs, fsq_out["z_q"]), dim=-1)
+        actor_fsq_obs = self.get_actor_fsq_obs_normalized(obs)
+        actor_latent = self.actor_fsq.latent_for_policy(actor_fsq_obs, detach=False)
+        obs = torch.cat((actor_obs, actor_latent), dim=-1)
         if self.state_dependent_std:
             return self.actor(obs)[..., 0, :]
         else:
@@ -269,19 +269,26 @@ class ActorCriticSingleFSQ(nn.Module):
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         critic_obs = self.get_critic_obs(obs)
         critic_obs = self.critic_obs_normalizer(critic_obs)
-        critic_fsq_obs = self.get_critic_fsq_obs(obs)
-        critic_fsq_obs = self.critic_fsq_obs_normalizer(critic_fsq_obs)
+        critic_fsq_obs = self.get_critic_fsq_obs_normalized(obs)
         if kwargs.get("reconstruct", False):
-            fsq_out = self.critic_fsq.forward(critic_fsq_obs,decoder_condition=None)
-            obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
+            fsq_out = self.critic_fsq.compute_loss(critic_fsq_obs, decoder_condition=None)
+            obs = torch.cat((critic_obs, fsq_out.encode.z_q), dim=-1)
             return {
                         "value": self.critic(obs),
-                        "fsq_out": self.critic_fsq.loss_function(critic_fsq_obs, fsq_out),
+                        "fsq_out": fsq_out,
                     }
         else:
-            fsq_out = self.critic_fsq.encoder_forward(critic_fsq_obs)
-            obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
+            critic_latent = self.critic_fsq.latent_for_policy(critic_fsq_obs, detach=False)
+            obs = torch.cat((critic_obs, critic_latent), dim=-1)
             return self.critic(obs)
+
+    def get_actor_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        actor_fsq_obs = self.get_actor_fsq_obs(obs)
+        return self.actor_fsq_obs_normalizer(actor_fsq_obs)
+
+    def get_critic_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        critic_fsq_obs = self.get_critic_fsq_obs(obs)
+        return self.critic_fsq_obs_normalizer(critic_fsq_obs)
 
     def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
         return self.get_obs(obs, "policy")

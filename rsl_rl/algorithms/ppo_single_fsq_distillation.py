@@ -256,9 +256,9 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
                     #       then the learning rate should be the same across all GPUs.
                     if self.gpu_global_rank == 0:
                         if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            self.learning_rate = max(5e-5, self.learning_rate / 1.15)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.15)
 
                     # Update the learning rate for all GPUs
                     if self.is_multi_gpu:
@@ -297,8 +297,8 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
             )
 
             fsq_loss_dict = self.policy.compute_fsq_losses(obs_batch)
-            actor_robot_motion_fsq_recon_loss = fsq_loss_dict["actor"]["loss"]
-            critic_robot_motion_fsq_recon_loss = fsq_loss_dict["critic"]["loss"]
+            actor_robot_motion_fsq_recon_loss = fsq_loss_dict["actor"].loss
+            critic_robot_motion_fsq_recon_loss = fsq_loss_dict["critic"].loss
             fsq_loss = (
                 actor_robot_motion_fsq_recon_loss * self.actor_fsq_loss_coef
                 + critic_robot_motion_fsq_recon_loss * self.critic_fsq_loss_coef

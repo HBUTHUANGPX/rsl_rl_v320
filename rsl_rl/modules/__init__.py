@@ -20,7 +20,15 @@ from .actor_critic_fsq_cvae import ActorCritic_FSQ_CVAE
 from .actor_critic_single_fsq import ActorCriticSingleFSQ
 from .actor_critic_single_fsq_distillation import ActorCriticSingleFSQDistillation
 from .vqvae import FrameFSQVAE
-from .fsq_components import FSQAutoEncoder, FSQBranch, FSQMLPDecoder, FSQMLPEncoder, FSQReconstructionHead
+from .fsq_components import (
+    FSQAutoEncoder,
+    FSQBranch,
+    FSQEncodeOutput,
+    FSQLossOutput,
+    FSQMLPDecoder,
+    FSQMLPEncoder,
+    FSQReconstructionHead,
+)
 __all__ = [
     "ActorCritic",
     "ActorCriticSingleFSQ",
@@ -38,6 +46,8 @@ __all__ = [
     "FSQQuantizer",
     "FSQAutoEncoder",
     "FSQBranch",
+    "FSQEncodeOutput",
+    "FSQLossOutput",
     "FSQMLPEncoder",
     "FSQMLPDecoder",
     "FSQReconstructionHead",

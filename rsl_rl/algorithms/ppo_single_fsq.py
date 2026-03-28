@@ -312,8 +312,8 @@ class PPOSingleFSQ:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            actor_robot_motion_fsq_recon_loss  = out["fsq_out"]["loss"]
-            critic_robot_motion_fsq_recon_loss = out_critic["fsq_out"]["loss"]
+            actor_robot_motion_fsq_recon_loss = out["fsq_out"].loss
+            critic_robot_motion_fsq_recon_loss = out_critic["fsq_out"].loss
 
             loss = (
                 surrogate_loss

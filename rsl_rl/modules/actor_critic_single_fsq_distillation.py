@@ -81,16 +81,17 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         # Actor FSQ
         self.detach_fsq_latent_in_policy = detach_fsq_latent_in_policy
         self.loaded_teacher = False
-        self.fsq_embedding_dim = 32
-        self.fsq_hidden_dim = 256
+        self.fsq_embedding_dim = 64
+        self.fsq_hidden_dims = [1024,512,256]
         self.fsq_levels = 16
         self.student_fsq = FSQAutoEncoder(
             encoder_input_dim=num_student_fsq_obs,
             target_dim=num_student_fsq_obs,
             decoder_condition_dim=0,
             embedding_dim=self.fsq_embedding_dim,
-            hidden_dim=self.fsq_hidden_dim,
+            hidden_dims=self.fsq_hidden_dims,
             fsq_levels=self.fsq_levels,
+            activation=activation,
         )  # TODO: 重构FSQ模块
         print(f"Actor FSQ: {self.student_fsq}")
         # Actor FSQ observation normalization
@@ -130,9 +131,10 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             encoder_input_dim=num_critic_fsq_obs,
             target_dim=num_critic_fsq_obs,
             decoder_condition_dim=0,
-            embedding_dim=32,
-            hidden_dim=256,
-            fsq_levels=16,
+            embedding_dim=self.fsq_embedding_dim,
+            hidden_dims=self.fsq_hidden_dims,
+            fsq_levels=self.fsq_levels,
+            activation=activation,
         )
         print(f"Critic FSQ: {self.critic_fsq}")
 
@@ -368,7 +370,7 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         critic_fsq_obs = self.get_critic_fsq_obs(obs)
         return self.critic_fsq_obs_normalizer(critic_fsq_obs)
 
-    def compute_fsq_losses(self, obs: TensorDict) -> dict[str, dict[str, torch.Tensor]]:
+    def compute_fsq_losses(self, obs: TensorDict):
         """Compute actor/critic FSQ losses for the standalone FSQ optimizer."""
         student_fsq_obs = self.get_student_fsq_obs_normalized(obs)
         critic_fsq_obs = self.get_critic_fsq_obs_normalized(obs)
