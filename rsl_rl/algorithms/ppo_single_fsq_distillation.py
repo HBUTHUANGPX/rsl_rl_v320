@@ -20,12 +20,12 @@ from rsl_rl.algorithms import PPOSingleFSQ
 class PPOSingleFSQDistillation(PPOSingleFSQ):
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
-    policy: ActorCriticSingleFSQ | ActorCriticSingleFSQDistillation
+    policy: ActorCriticSingleFSQDistillation
     """The actor critic module."""
 
     def __init__(
         self,
-        policy: ActorCriticSingleFSQ | ActorCriticSingleFSQDistillation,
+        policy: ActorCriticSingleFSQDistillation,
         storage: RLDistillationRolloutStorage,
         num_learning_epochs: int = 5,
         num_mini_batches: int = 4,
