@@ -12,7 +12,7 @@ from torch.distributions import Normal
 from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
-from rsl_rl.modules.vqvae import FrameFSQVAE
+from rsl_rl.modules.fsq_components import FSQAutoEncoder
 import os
 import onnx
 import copy
@@ -36,6 +36,7 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         state_dependent_std: bool = False,
+        detach_fsq_latent_in_policy: bool = True,
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -78,13 +79,15 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             ), "The Teacher module only supports 1D observations."
             num_teacher_obs += obs[obs_group].shape[-1]
         # Actor FSQ
+        self.detach_fsq_latent_in_policy = detach_fsq_latent_in_policy
+        self.loaded_teacher = False
         self.fsq_embedding_dim = 32
         self.fsq_hidden_dim = 256
         self.fsq_levels = 16
-        self.student_fsq = FrameFSQVAE(
+        self.student_fsq = FSQAutoEncoder(
             encoder_input_dim=num_student_fsq_obs,
-            decoder_condition_dim=0,
             target_dim=num_student_fsq_obs,
+            decoder_condition_dim=0,
             embedding_dim=self.fsq_embedding_dim,
             hidden_dim=self.fsq_hidden_dim,
             fsq_levels=self.fsq_levels,
@@ -123,10 +126,10 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             self.student_obs_normalizer = torch.nn.Identity()
 
         # Critic FSQ
-        self.critic_fsq = FrameFSQVAE(
+        self.critic_fsq = FSQAutoEncoder(
             encoder_input_dim=num_critic_fsq_obs,
-            decoder_condition_dim=0,
             target_dim=num_critic_fsq_obs,
+            decoder_condition_dim=0,
             embedding_dim=32,
             hidden_dim=256,
             fsq_levels=16,
@@ -300,20 +303,24 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         teacher_obs = self.get_teacher_obs(obs)
         teacher_obs = self.teacher_obs_normalizer(teacher_obs)
 
-        student_fsq_obs = self.get_student_fsq_obs(obs)
-        student_fsq_obs = self.student_fsq_obs_normalizer(student_fsq_obs)
+        student_fsq_obs = self.get_student_fsq_obs_normalized(obs)
+        student_latent = self.student_fsq.latent_for_policy(
+            student_fsq_obs,
+            detach=self.detach_fsq_latent_in_policy,
+        )
 
         if kwargs.get("reconstruct", False):
-            fsq_out = self.student_fsq.forward(student_fsq_obs, decoder_condition=None)
-            obs = torch.cat((student_obs, fsq_out["z_q"]), dim=-1)
+            fsq_out = self.student_fsq.compute_loss(
+                student_fsq_obs, decoder_condition=None
+            )
+            obs = torch.cat((student_obs, student_latent), dim=-1)
             self._update_distribution(obs)
             return {
                 "action": self.distribution.sample(),
-                "fsq_out": self.student_fsq.loss_function(student_fsq_obs, fsq_out),
+                "fsq_out": fsq_out,
             }
         else:
-            fsq_out = self.student_fsq.encoder_forward(student_fsq_obs)
-            obs = torch.cat((student_obs, fsq_out["z_q"]), dim=-1)
+            obs = torch.cat((student_obs, student_latent), dim=-1)
             self._update_distribution(obs)
             self._update_teacher_distribution(teacher_obs)
             return self.distribution.sample()
@@ -321,10 +328,12 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
     def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         student_obs = self.get_student_obs(obs)
         student_obs = self.student_obs_normalizer(student_obs)
-        student_fsq_obs = self.get_student_fsq_obs(obs)
-        student_fsq_obs = self.student_fsq_obs_normalizer(student_fsq_obs)
-        fsq_out = self.student_fsq.encoder_forward(student_fsq_obs)
-        obs = torch.cat((student_obs, fsq_out["z_q"]), dim=-1)
+        student_fsq_obs = self.get_student_fsq_obs_normalized(obs)
+        student_latent = self.student_fsq.latent_for_policy(
+            student_fsq_obs,
+            detach=self.detach_fsq_latent_in_policy,
+        )
+        obs = torch.cat((student_obs, student_latent), dim=-1)
         if self.state_dependent_std:
             return self.student(obs)[..., 0, :]
         else:
@@ -333,19 +342,44 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         critic_obs = self.get_critic_obs(obs)
         critic_obs = self.critic_obs_normalizer(critic_obs)
-        critic_fsq_obs = self.get_critic_fsq_obs(obs)
-        critic_fsq_obs = self.critic_fsq_obs_normalizer(critic_fsq_obs)
+        critic_fsq_obs = self.get_critic_fsq_obs_normalized(obs)
+        critic_latent = self.critic_fsq.latent_for_policy(
+            critic_fsq_obs,
+            detach=self.detach_fsq_latent_in_policy,
+        )
         if kwargs.get("reconstruct", False):
-            fsq_out = self.critic_fsq.forward(critic_fsq_obs,decoder_condition=None)
-            obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
+            fsq_out = self.critic_fsq.compute_loss(
+                critic_fsq_obs, decoder_condition=None
+            )
+            obs = torch.cat((critic_obs, critic_latent), dim=-1)
             return {
                         "value": self.critic(obs),
-                        "fsq_out": self.critic_fsq.loss_function(critic_fsq_obs, fsq_out),
+                        "fsq_out": fsq_out,
                     }
         else:
-            fsq_out = self.critic_fsq.encoder_forward(critic_fsq_obs)
-            obs = torch.cat((critic_obs, fsq_out["z_q"]), dim=-1)
+            obs = torch.cat((critic_obs, critic_latent), dim=-1)
             return self.critic(obs)
+
+    def get_student_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        student_fsq_obs = self.get_student_fsq_obs(obs)
+        return self.student_fsq_obs_normalizer(student_fsq_obs)
+
+    def get_critic_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        critic_fsq_obs = self.get_critic_fsq_obs(obs)
+        return self.critic_fsq_obs_normalizer(critic_fsq_obs)
+
+    def compute_fsq_losses(self, obs: TensorDict) -> dict[str, dict[str, torch.Tensor]]:
+        """Compute actor/critic FSQ losses for the standalone FSQ optimizer."""
+        student_fsq_obs = self.get_student_fsq_obs_normalized(obs)
+        critic_fsq_obs = self.get_critic_fsq_obs_normalized(obs)
+        return {
+            "actor": self.student_fsq.compute_loss(
+                student_fsq_obs, decoder_condition=None
+            ),
+            "critic": self.critic_fsq.compute_loss(
+                critic_fsq_obs, decoder_condition=None
+            ),
+        }
 
     def get_student_obs(self, obs: TensorDict) -> torch.Tensor:
         return self.get_obs(obs, "policy")
@@ -397,6 +431,7 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             self.loaded_teacher = True
             self.teacher.eval()
             self.teacher_obs_normalizer.eval()
+            self.teacher.requires_grad_(False)
         return False
 
     def export_policy_as_onnx(

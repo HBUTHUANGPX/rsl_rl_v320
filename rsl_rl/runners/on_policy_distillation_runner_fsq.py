@@ -63,6 +63,8 @@ class OnPolicyDisstillationRunnerFSQ(OnPolicyRunnerFSQ):
         if load_optimizer and resumed_training:
             # Algorithm optimizer
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            if hasattr(self.alg, "fsq_optimizer") and "fsq_optimizer_state_dict" in loaded_dict:
+                self.alg.fsq_optimizer.load_state_dict(loaded_dict["fsq_optimizer_state_dict"])
             # RND optimizer if used
             if self.alg_cfg["rnd_cfg"]:
                 self.alg.rnd_optimizer.load_state_dict(

@@ -40,6 +40,10 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
+        bc_kl_coef: float = 1e-2,
+        actor_fsq_loss_coef: float = 0.01,
+        critic_fsq_loss_coef: float = 0.005,
+        fsq_learning_rate: float = 5e-3,
         device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -101,8 +105,24 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
         self.policy = policy
         self.policy.to(self.device)
 
-        # Create the optimizer
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+        # Create split optimizers so PPO/BC does not backpropagate into FSQ.
+        fsq_params = list(
+            chain(
+                self.policy.student_fsq.parameters(),
+                self.policy.critic_fsq.parameters(),
+            )
+        )
+        fsq_param_ids = {id(param) for param in fsq_params}
+        main_params = [
+            param
+            for param in self.policy.parameters()
+            if param.requires_grad and id(param) not in fsq_param_ids
+        ]
+        self.optimizer = optim.Adam(main_params, lr=learning_rate)
+        self.fsq_optimizer = optim.Adam(
+            fsq_params,
+            lr=fsq_learning_rate,
+        )
 
         # Add storage
         self.storage = storage
@@ -122,6 +142,9 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.bc_kl_coef = bc_kl_coef
+        self.actor_fsq_loss_coef = actor_fsq_loss_coef
+        self.critic_fsq_loss_coef = critic_fsq_loss_coef
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         if self.policy.is_recurrent:
@@ -200,10 +223,11 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
 
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: We need to do this because we updated the policy with the new parameters
-            out = self.policy.act(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[0], reconstruct=True)
+            self.policy.act(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[0])
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
-            out_critic = self.policy.evaluate(obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[1], reconstruct=True)
-            value_batch = out_critic["value"]
+            value_batch = self.policy.evaluate(
+                obs_batch, masks=masks_batch, hidden_state=hidden_states_batch[1]
+            )
             # Note: We only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
             sigma_batch = self.policy.action_std[:original_batch_size]
@@ -265,16 +289,19 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            actor_robot_motion_fsq_recon_loss  = out["fsq_out"]["loss"]
-            critic_robot_motion_fsq_recon_loss = out_critic["fsq_out"]["loss"]
-
-            loss = (
+            policy_loss = (
                 surrogate_loss
                 + self.value_loss_coef * value_loss
                 - self.entropy_coef * entropy_batch.mean()
-                + actor_robot_motion_fsq_recon_loss * 0.01
-                + critic_robot_motion_fsq_recon_loss * 0.005
-                + BC_kl
+                + BC_kl * self.bc_kl_coef
+            )
+
+            fsq_loss_dict = self.policy.compute_fsq_losses(obs_batch)
+            actor_robot_motion_fsq_recon_loss = fsq_loss_dict["actor"]["loss"]
+            critic_robot_motion_fsq_recon_loss = fsq_loss_dict["critic"]["loss"]
+            fsq_loss = (
+                actor_robot_motion_fsq_recon_loss * self.actor_fsq_loss_coef
+                + critic_robot_motion_fsq_recon_loss * self.critic_fsq_loss_coef
             )
 
             # Symmetry loss
@@ -306,7 +333,7 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
                 )
                 # Add the loss to the total loss
                 if self.symmetry["use_mirror_loss"]:
-                    loss += self.symmetry["mirror_loss_coeff"] * symmetry_loss
+                    policy_loss += self.symmetry["mirror_loss_coeff"] * symmetry_loss
                 else:
                     symmetry_loss = symmetry_loss.detach()
 
@@ -327,7 +354,9 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
 
             # Compute the gradients for PPO
             self.optimizer.zero_grad()
-            loss.backward()
+            policy_loss.backward()
+            self.fsq_optimizer.zero_grad()
+            fsq_loss.backward()
             # Compute the gradients for RND
             if self.rnd:
                 self.rnd_optimizer.zero_grad()
@@ -338,8 +367,14 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
                 self.reduce_parameters()
 
             # Apply the gradients for PPO
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            nn.utils.clip_grad_norm_(
+                self.optimizer.param_groups[0]["params"], self.max_grad_norm
+            )
             self.optimizer.step()
+            nn.utils.clip_grad_norm_(
+                self.fsq_optimizer.param_groups[0]["params"], self.max_grad_norm
+            )
+            self.fsq_optimizer.step()
             # Apply the gradients for RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()

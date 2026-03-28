@@ -175,6 +175,8 @@ class OnPolicyRunner:
             "iter": self.current_learning_iteration,
             "infos": infos,
         }
+        if hasattr(self.alg, "fsq_optimizer"):
+            saved_dict["fsq_optimizer_state_dict"] = self.alg.fsq_optimizer.state_dict()
         # Save RND model if used
         if self.alg_cfg["rnd_cfg"]:
             saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
@@ -196,6 +198,8 @@ class OnPolicyRunner:
         if load_optimizer and resumed_training:
             # Algorithm optimizer
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            if hasattr(self.alg, "fsq_optimizer") and "fsq_optimizer_state_dict" in loaded_dict:
+                self.alg.fsq_optimizer.load_state_dict(loaded_dict["fsq_optimizer_state_dict"])
             # RND optimizer if used
             if self.alg_cfg["rnd_cfg"]:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
