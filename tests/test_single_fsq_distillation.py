@@ -44,8 +44,8 @@ def test_fsq_autoencoder_can_detach_policy_latent() -> None:
     encoder_input = torch.randn(4, 5)
     latent = model.latent_for_policy(encoder_input, detach=True)
     assert latent.requires_grad is False
-    encoded = model.encoder_forward(encoder_input)
-    assert encoded.z_q.shape == (4, model.embedding_dim)
+    _, z_q, _ = model.encoder_forward(encoder_input)
+    assert z_q.shape == (4, model.embedding_dim)
 
 
 def test_policy_loss_does_not_backprop_into_student_fsq() -> None:
@@ -68,7 +68,7 @@ def test_fsq_losses_still_backprop_into_student_fsq() -> None:
     obs = _make_obs()
 
     fsq_losses = policy.compute_fsq_losses(obs)
-    fsq_losses["actor"].loss.backward()
+    fsq_losses["actor"]["loss"].backward()
 
     fsq_grads = [
         parameter.grad

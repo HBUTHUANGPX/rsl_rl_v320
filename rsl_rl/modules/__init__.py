@@ -23,8 +23,6 @@ from .vqvae import FrameFSQVAE
 from .fsq_components import (
     FSQAutoEncoder,
     FSQBranch,
-    FSQEncodeOutput,
-    FSQLossOutput,
     FSQMLPDecoder,
     FSQMLPEncoder,
     FSQReconstructionHead,
@@ -46,8 +44,6 @@ __all__ = [
     "FSQQuantizer",
     "FSQAutoEncoder",
     "FSQBranch",
-    "FSQEncodeOutput",
-    "FSQLossOutput",
     "FSQMLPEncoder",
     "FSQMLPDecoder",
     "FSQReconstructionHead",

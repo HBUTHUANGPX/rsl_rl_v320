@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Sequence
 
 import torch
@@ -10,26 +9,6 @@ import torch.nn.functional as F
 from rsl_rl.networks import MLP
 
 from .quantizers import FSQQuantizer
-
-
-@dataclass(slots=True)
-class FSQEncodeOutput:
-    z_e: torch.Tensor
-    z_q: torch.Tensor
-    indices: torch.Tensor
-    level_histogram: torch.Tensor
-    per_dim_usage: torch.Tensor
-    avg_utilization: torch.Tensor
-    effective_bits: torch.Tensor
-    effective_bits_entropy: torch.Tensor
-
-
-@dataclass(slots=True)
-class FSQLossOutput:
-    loss: torch.Tensor
-    recon_loss: torch.Tensor
-    x_hat: torch.Tensor
-    encode: FSQEncodeOutput
 
 
 class FSQMLPEncoder(nn.Module):
@@ -108,27 +87,22 @@ class FSQBranch(nn.Module):
         self,
         encoder_input: torch.Tensor,
         detach_quantized: bool = False,
-    ) -> FSQEncodeOutput:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         z_e = self.encoder(encoder_input)
         q_out = self.quantizer(z_e)
         z_q = q_out["z_q"].detach() if detach_quantized else q_out["z_q"]
-        return FSQEncodeOutput(
-            z_e=z_e,
-            z_q=z_q,
-            indices=q_out["indices"],
-            level_histogram=q_out["level_histogram"],
-            per_dim_usage=q_out["per_dim_usage"],
-            avg_utilization=q_out["avg_utilization"],
-            effective_bits=q_out["effective_bits"],
-            effective_bits_entropy=q_out["effective_bits_entropy"],
-        )
+        aux = dict(q_out)
+        aux["z_e"] = z_e
+        aux["z_q"] = z_q
+        return z_e, z_q, aux
 
     def latent_for_policy(
         self,
         encoder_input: torch.Tensor,
         detach: bool = True,
     ) -> torch.Tensor:
-        return self.encode(encoder_input=encoder_input, detach_quantized=detach).z_q
+        _, z_q, _ = self.encode(encoder_input=encoder_input, detach_quantized=detach)
+        return z_q
 
 
 class FSQReconstructionHead(nn.Module):
@@ -210,15 +184,15 @@ class FSQAutoEncoder(nn.Module):
         self,
         encoder_input: torch.Tensor,
         decoder_condition: torch.Tensor | None = None,
-    ) -> tuple[FSQEncodeOutput, torch.Tensor]:
-        encode = self.branch.encode(encoder_input)
-        return encode, self.decoder_head.decode(encode.z_q, decoder_condition)
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        z_e, z_q, aux = self.branch.encode(encoder_input)
+        return z_q, self.decoder_head.decode(z_q, decoder_condition), aux
 
     def encoder_forward(
         self,
         encoder_input: torch.Tensor,
         detach_quantized: bool = False,
-    ) -> FSQEncodeOutput:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         return self.branch.encode(
             encoder_input=encoder_input,
             detach_quantized=detach_quantized,
@@ -235,12 +209,8 @@ class FSQAutoEncoder(nn.Module):
         self,
         target: torch.Tensor,
         decoder_condition: torch.Tensor | None = None,
-    ) -> FSQLossOutput:
-        encode, x_hat = self.forward(target, decoder_condition=decoder_condition)
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        _, x_hat, aux = self.forward(target, decoder_condition=decoder_condition)
         recon = self.decoder_head.reconstruction_loss(x_hat, target)
-        return FSQLossOutput(
-            loss=recon,
-            recon_loss=recon,
-            x_hat=x_hat,
-            encode=encode,
-        )
+        aux["x_hat"] = x_hat
+        return recon, x_hat, aux

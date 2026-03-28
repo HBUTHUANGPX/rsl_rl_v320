@@ -297,8 +297,8 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
             )
 
             fsq_loss_dict = self.policy.compute_fsq_losses(obs_batch)
-            actor_robot_motion_fsq_recon_loss = fsq_loss_dict["actor"].loss
-            critic_robot_motion_fsq_recon_loss = fsq_loss_dict["critic"].loss
+            actor_robot_motion_fsq_recon_loss = fsq_loss_dict["actor"]["loss"]
+            critic_robot_motion_fsq_recon_loss = fsq_loss_dict["critic"]["loss"]
             fsq_loss = (
                 actor_robot_motion_fsq_recon_loss * self.actor_fsq_loss_coef
                 + critic_robot_motion_fsq_recon_loss * self.critic_fsq_loss_coef

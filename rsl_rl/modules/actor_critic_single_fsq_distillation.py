@@ -312,14 +312,14 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         )
 
         if kwargs.get("reconstruct", False):
-            fsq_out = self.student_fsq.compute_loss(
+            fsq_loss, _, fsq_aux = self.student_fsq.compute_loss(
                 student_fsq_obs, decoder_condition=None
             )
             obs = torch.cat((student_obs, student_latent), dim=-1)
             self._update_distribution(obs)
             return {
                 "action": self.distribution.sample(),
-                "fsq_out": fsq_out,
+                "fsq_out": {"loss": fsq_loss, "recon_loss": fsq_loss, **fsq_aux},
             }
         else:
             obs = torch.cat((student_obs, student_latent), dim=-1)
@@ -350,13 +350,13 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             detach=self.detach_fsq_latent_in_policy,
         )
         if kwargs.get("reconstruct", False):
-            fsq_out = self.critic_fsq.compute_loss(
+            fsq_loss, _, fsq_aux = self.critic_fsq.compute_loss(
                 critic_fsq_obs, decoder_condition=None
             )
             obs = torch.cat((critic_obs, critic_latent), dim=-1)
             return {
                         "value": self.critic(obs),
-                        "fsq_out": fsq_out,
+                        "fsq_out": {"loss": fsq_loss, "recon_loss": fsq_loss, **fsq_aux},
                     }
         else:
             obs = torch.cat((critic_obs, critic_latent), dim=-1)
@@ -374,13 +374,15 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         """Compute actor/critic FSQ losses for the standalone FSQ optimizer."""
         student_fsq_obs = self.get_student_fsq_obs_normalized(obs)
         critic_fsq_obs = self.get_critic_fsq_obs_normalized(obs)
+        actor_loss, actor_x_hat, actor_aux = self.student_fsq.compute_loss(
+            student_fsq_obs, decoder_condition=None
+        )
+        critic_loss, critic_x_hat, critic_aux = self.critic_fsq.compute_loss(
+            critic_fsq_obs, decoder_condition=None
+        )
         return {
-            "actor": self.student_fsq.compute_loss(
-                student_fsq_obs, decoder_condition=None
-            ),
-            "critic": self.critic_fsq.compute_loss(
-                critic_fsq_obs, decoder_condition=None
-            ),
+            "actor": {"loss": actor_loss, "recon_loss": actor_loss, "x_hat": actor_x_hat, **actor_aux},
+            "critic": {"loss": critic_loss, "recon_loss": critic_loss, "x_hat": critic_x_hat, **critic_aux},
         }
 
     def get_student_obs(self, obs: TensorDict) -> torch.Tensor:

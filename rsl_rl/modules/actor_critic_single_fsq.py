@@ -242,12 +242,14 @@ class ActorCriticSingleFSQ(nn.Module):
         actor_fsq_obs = self.get_actor_fsq_obs_normalized(obs)
 
         if kwargs.get("reconstruct", False):
-            fsq_out = self.actor_fsq.compute_loss(actor_fsq_obs, decoder_condition=None)
-            obs = torch.cat((actor_obs, fsq_out.encode.z_q), dim=-1)
+            fsq_loss, _, fsq_aux = self.actor_fsq.compute_loss(
+                actor_fsq_obs, decoder_condition=None
+            )
+            obs = torch.cat((actor_obs, fsq_aux["z_q"]), dim=-1)
             self._update_distribution(obs)
             return {
                 "action": self.distribution.sample(),
-                "fsq_out": fsq_out,
+                "fsq_out": {"loss": fsq_loss, "recon_loss": fsq_loss, **fsq_aux},
             }
         else:
             actor_latent = self.actor_fsq.latent_for_policy(actor_fsq_obs, detach=False)
@@ -271,11 +273,13 @@ class ActorCriticSingleFSQ(nn.Module):
         critic_obs = self.critic_obs_normalizer(critic_obs)
         critic_fsq_obs = self.get_critic_fsq_obs_normalized(obs)
         if kwargs.get("reconstruct", False):
-            fsq_out = self.critic_fsq.compute_loss(critic_fsq_obs, decoder_condition=None)
-            obs = torch.cat((critic_obs, fsq_out.encode.z_q), dim=-1)
+            fsq_loss, _, fsq_aux = self.critic_fsq.compute_loss(
+                critic_fsq_obs, decoder_condition=None
+            )
+            obs = torch.cat((critic_obs, fsq_aux["z_q"]), dim=-1)
             return {
                         "value": self.critic(obs),
-                        "fsq_out": fsq_out,
+                        "fsq_out": {"loss": fsq_loss, "recon_loss": fsq_loss, **fsq_aux},
                     }
         else:
             critic_latent = self.critic_fsq.latent_for_policy(critic_fsq_obs, detach=False)
