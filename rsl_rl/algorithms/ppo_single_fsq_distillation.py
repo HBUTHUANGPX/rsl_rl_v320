@@ -43,7 +43,7 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
         bc_kl_coef: float = 1e-2,
         actor_fsq_loss_coef: float = 0.01,
         critic_fsq_loss_coef: float = 0.005,
-        fsq_learning_rate: float = 5e-3,
+        fsq_learning_rate: float = 1e-5,
         device: str = "cpu",
         # RND parameters
         rnd_cfg: dict | None = None,
@@ -256,9 +256,9 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
                     #       then the learning rate should be the same across all GPUs.
                     if self.gpu_global_rank == 0:
                         if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(5e-5, self.learning_rate / 1.15)
+                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.15)
+                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
 
                     # Update the learning rate for all GPUs
                     if self.is_multi_gpu:

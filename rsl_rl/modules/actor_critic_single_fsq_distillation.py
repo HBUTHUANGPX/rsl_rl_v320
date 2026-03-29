@@ -84,6 +84,7 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
         self.fsq_embedding_dim = 64
         self.fsq_hidden_dims = [1024,512,256]
         self.fsq_levels = 16
+        self.fsq_activation = "elu" #"relu"
         self.student_fsq = FSQAutoEncoder(
             encoder_input_dim=num_student_fsq_obs,
             target_dim=num_student_fsq_obs,
@@ -91,7 +92,7 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             embedding_dim=self.fsq_embedding_dim,
             hidden_dims=self.fsq_hidden_dims,
             fsq_levels=self.fsq_levels,
-            activation=activation,
+            activation=self.fsq_activation,
         )  # TODO: 重构FSQ模块
         print(f"Actor FSQ: {self.student_fsq}")
         # Actor FSQ observation normalization
@@ -134,7 +135,7 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             embedding_dim=self.fsq_embedding_dim,
             hidden_dims=self.fsq_hidden_dims,
             fsq_levels=self.fsq_levels,
-            activation=activation,
+            activation=self.fsq_activation,
         )
         print(f"Critic FSQ: {self.critic_fsq}")
 
