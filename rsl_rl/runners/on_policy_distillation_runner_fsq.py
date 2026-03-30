@@ -49,13 +49,19 @@ class OnPolicyDisstillationRunnerFSQ(OnPolicyRunnerFSQ):
         super().learn(num_learning_iterations, init_at_random_ep_len)
 
     def load(
-        self, path: str, load_optimizer: bool = True, map_location: str | None = None
+        self, path: str, load_optimizer: bool = True, map_location: str | None = None, is_eval = False,
     ) -> dict:
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
         # Load model
-        resumed_training = self.alg.policy.load_state_dict(
-            loaded_dict["model_state_dict"]
-        )
+        if is_eval :
+            print(path)
+            resumed_training = self.alg.policy.load_state_dict_eval(
+                loaded_dict["model_state_dict"]
+            )
+        else:
+            resumed_training = self.alg.policy.load_state_dict(
+                loaded_dict["model_state_dict"]
+            )
         # Load RND model if used
         if self.alg_cfg["rnd_cfg"]:
             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])

@@ -438,6 +438,9 @@ class ActorCriticSingleFSQDistillation(ActorCriticSingleFSQ,nn.Module):
             self.teacher_obs_normalizer.eval()
             self.teacher.requires_grad_(False)
         return False
+    
+    def load_state_dict_eval(self, state_dict: dict, strict: bool = True) -> bool:
+        super().load_state_dict(state_dict, strict=strict)
 
     def export_policy_as_onnx(
         self,

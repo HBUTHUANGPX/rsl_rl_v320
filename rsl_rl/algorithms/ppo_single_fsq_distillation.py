@@ -40,7 +40,7 @@ class PPOSingleFSQDistillation(PPOSingleFSQ):
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
-        bc_kl_coef: float = 1e-2,
+        bc_kl_coef: float = 5e-2,
         actor_fsq_loss_coef: float = 0.01,
         critic_fsq_loss_coef: float = 0.005,
         fsq_learning_rate: float = 1e-5,
