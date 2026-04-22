@@ -17,9 +17,11 @@ from .symmetry import resolve_symmetry_config
 from .actor_critic_cvae import ActorCritic_CVAE
 from .fsq import FSQQuantizer
 from .actor_critic_fsq_cvae import ActorCritic_FSQ_CVAE
+from .actor_critic_dual_fsq import ActorCriticDualFSQ
 from .actor_critic_single_fsq import ActorCriticSingleFSQ
 from .actor_critic_single_fsq_distillation import ActorCriticSingleFSQDistillation
 from .vqvae import FrameFSQVAE
+from .dual_fsq_components import DualFSQAutoEncoder, DualFSQOutput
 from .fsq_components import (
     FSQAutoEncoder,
     FSQBranch,
@@ -29,6 +31,7 @@ from .fsq_components import (
 )
 __all__ = [
     "ActorCritic",
+    "ActorCriticDualFSQ",
     "ActorCriticSingleFSQ",
     "ActorCriticSingleFSQDistillation",
     "ActorCriticCNN",
@@ -47,6 +50,8 @@ __all__ = [
     "FSQMLPEncoder",
     "FSQMLPDecoder",
     "FSQReconstructionHead",
+    "DualFSQAutoEncoder",
+    "DualFSQOutput",
     "ActorCritic_FSQ_CVAE",
     "FrameFSQVAE"
 ]
