@@ -275,11 +275,11 @@ class ActorCritic_CVAE(nn.Module):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
         teacher_obs = self.get_teacher_obs(obs)
-        motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
-        unique_ids, _ = torch.unique(motion_group, return_inverse=True)
+        ref_motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+        unique_ids, _ = torch.unique(ref_motion_group, return_inverse=True)
         _teacher_obs = torch.zeros_like(teacher_obs)
         for uid in unique_ids:
-            mask = (motion_group == uid)  # 布尔掩码，形状 (4096,)
+            mask = (ref_motion_group == uid)  # 布尔掩码，形状 (4096,)
             sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
             if sub_obs.numel() == 0:
                 continue
@@ -297,11 +297,11 @@ class ActorCritic_CVAE(nn.Module):
         actor_obs = self.actor_obs_normalizer(actor_obs)
         if need_kl: # 2. train inference,使用prior构建latent
             teacher_obs = self.get_teacher_obs(obs)
-            motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
-            unique_ids, _ = torch.unique(motion_group, return_inverse=True)
+            ref_motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+            unique_ids, _ = torch.unique(ref_motion_group, return_inverse=True)
             _teacher_obs = torch.zeros_like(teacher_obs)
             for uid in unique_ids:
-                mask = (motion_group == uid)  # 布尔掩码，形状 (4096,)
+                mask = (ref_motion_group == uid)  # 布尔掩码，形状 (4096,)
                 sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
                 if sub_obs.numel() == 0:
                     continue
@@ -322,16 +322,16 @@ class ActorCritic_CVAE(nn.Module):
         teacher_obs = self.get_teacher_obs(obs)
         critic_obs = self.get_critic_obs(obs)
         critic_obs = self.critic_obs_normalizer(critic_obs)
-        motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
+        ref_motion_group = self.get_motion_group(obs).squeeze(1)# 形状从 (4096, 1) 转换为 (4096,)
         # 识别唯一教师索引
-        unique_ids, inverse_indices = torch.unique(motion_group, return_inverse=True)
+        unique_ids, inverse_indices = torch.unique(ref_motion_group, return_inverse=True)
 
         # 预分配动作张量（假设动作维度为 action_dim，根据实际替换）
         actions = torch.zeros(teacher_obs.shape[0], self.num_actions, device=teacher_obs.device)
-        # 根据 motion_group 选择对应教师
+        # 根据 ref_motion_group 选择对应教师
         with torch.no_grad():
             for uid in unique_ids:
-                mask = (motion_group == uid)  # 布尔掩码，形状 (4096,)
+                mask = (ref_motion_group == uid)  # 布尔掩码，形状 (4096,)
                 sub_obs = teacher_obs[mask]  # 子批次观测，形状 (sub_batch_size, 100)
                 if sub_obs.numel() == 0:
                     continue
@@ -366,15 +366,14 @@ class ActorCritic_CVAE(nn.Module):
         return torch.cat(obs_list, dim=-1)
 
     def get_motion_group(self, obs: TensorDict) -> torch.Tensor:
-        """获取 motion_group 观测（如果存在）。"""
-        if "motion_group" in self.obs_groups and self.obs_groups["motion_group"]:
+        """获取 ref_motion_group 观测。"""
+        if "ref_motion_group" in self.obs_groups and self.obs_groups["ref_motion_group"]:
             obs_list = []
-            for obs_group in self.obs_groups["motion_group"]:
+            for obs_group in self.obs_groups["ref_motion_group"]:
                 obs_list.append(obs[obs_group])
-            # obs_list = [obs[obs_group] for obs_group in self.obs_groups["motion_group"]]
             return torch.cat(obs_list, dim=-1).to(torch.int64)
         else:
-            raise ValueError("观测组中未定义 'motion_group'")
+            raise ValueError("观测组中未定义 'ref_motion_group'")
         
     def train(self, mode: bool = True) -> None:
         super().train(mode)

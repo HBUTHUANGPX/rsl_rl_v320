@@ -54,22 +54,10 @@ class ActorCriticDualFSQ(nn.Module):
         super().__init__()
 
         self.obs_groups = obs_groups
-        self.actor_human_fsq_group_name = (
-            "actor_human_fsq_window" if "actor_human_fsq_window" in obs_groups else "human_fsq_window"
-        )
-        self.actor_robot_fsq_group_name = (
-            "actor_robot_fsq_window" if "actor_robot_fsq_window" in obs_groups else "robot_fsq_window"
-        )
-        self.critic_human_fsq_group_name = (
-            "critic_human_fsq_window"
-            if "critic_human_fsq_window" in obs_groups
-            else self.actor_human_fsq_group_name
-        )
-        self.critic_robot_fsq_group_name = (
-            "critic_robot_fsq_window"
-            if "critic_robot_fsq_window" in obs_groups
-            else self.actor_robot_fsq_group_name
-        )
+        self.actor_human_fsq_group_name = "actor_ref_human_fsq_feature_window"
+        self.actor_robot_fsq_group_name = "actor_ref_robot_fsq_feature_window"
+        self.critic_human_fsq_group_name = "critic_ref_human_fsq_feature_window"
+        self.critic_robot_fsq_group_name = "critic_ref_robot_fsq_feature_window"
         self.detach_fsq_latent_in_policy = bool(detach_fsq_latent_in_policy)
         self.dual_fsq_loss_weights = dual_fsq_loss_weights or {
             "robot_recon": 1.0,
