@@ -21,6 +21,8 @@ class PPODualFSQ(PPOSingleFSQ):
         mean_surrogate_loss = 0
         mean_entropy = 0
         mean_dual_fsq_loss = 0
+        mean_actor_dual_fsq_loss = 0
+        mean_critic_dual_fsq_loss = 0
         mean_dual_fsq_terms = {
             "robot_recon": 0.0,
             "human_recon": 0.0,
@@ -127,6 +129,8 @@ class PPODualFSQ(PPOSingleFSQ):
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
             dual_fsq_loss = out["fsq_out"]["loss"]
+            actor_dual_fsq_loss = out["fsq_out"].get("actor", {}).get("loss", dual_fsq_loss)
+            critic_dual_fsq_loss = out["fsq_out"].get("critic", {}).get("loss", dual_fsq_loss)
             loss = (
                 surrogate_loss
                 + self.value_loss_coef * value_loss
@@ -181,6 +185,8 @@ class PPODualFSQ(PPOSingleFSQ):
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
             mean_dual_fsq_loss += dual_fsq_loss.item()
+            mean_actor_dual_fsq_loss += actor_dual_fsq_loss.item()
+            mean_critic_dual_fsq_loss += critic_dual_fsq_loss.item()
             for name, term in out["fsq_out"]["terms"].items():
                 if name in mean_dual_fsq_terms:
                     mean_dual_fsq_terms[name] += term.item()
@@ -194,6 +200,8 @@ class PPODualFSQ(PPOSingleFSQ):
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
         mean_dual_fsq_loss /= num_updates
+        mean_actor_dual_fsq_loss /= num_updates
+        mean_critic_dual_fsq_loss /= num_updates
         for name in mean_dual_fsq_terms:
             mean_dual_fsq_terms[name] /= num_updates
         if mean_rnd_loss is not None:
@@ -208,6 +216,8 @@ class PPODualFSQ(PPOSingleFSQ):
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "dual_fsq": mean_dual_fsq_loss,
+            "actor_dual_fsq": mean_actor_dual_fsq_loss,
+            "critic_dual_fsq": mean_critic_dual_fsq_loss,
             "dual_fsq_robot_recon": mean_dual_fsq_terms["robot_recon"],
             "dual_fsq_human_recon": mean_dual_fsq_terms["human_recon"],
             "dual_fsq_latent_align": mean_dual_fsq_terms["latent_align"],

@@ -54,8 +54,22 @@ class ActorCriticDualFSQ(nn.Module):
         super().__init__()
 
         self.obs_groups = obs_groups
-        self.human_fsq_group_name = "human_fsq_window" if "human_fsq_window" in obs_groups else "policy_window"
-        self.robot_fsq_group_name = "robot_fsq_window" if "robot_fsq_window" in obs_groups else "critic_window"
+        self.actor_human_fsq_group_name = (
+            "actor_human_fsq_window" if "actor_human_fsq_window" in obs_groups else "human_fsq_window"
+        )
+        self.actor_robot_fsq_group_name = (
+            "actor_robot_fsq_window" if "actor_robot_fsq_window" in obs_groups else "robot_fsq_window"
+        )
+        self.critic_human_fsq_group_name = (
+            "critic_human_fsq_window"
+            if "critic_human_fsq_window" in obs_groups
+            else self.actor_human_fsq_group_name
+        )
+        self.critic_robot_fsq_group_name = (
+            "critic_robot_fsq_window"
+            if "critic_robot_fsq_window" in obs_groups
+            else self.actor_robot_fsq_group_name
+        )
         self.detach_fsq_latent_in_policy = bool(detach_fsq_latent_in_policy)
         self.dual_fsq_loss_weights = dual_fsq_loss_weights or {
             "robot_recon": 1.0,
@@ -66,12 +80,14 @@ class ActorCriticDualFSQ(nn.Module):
 
         num_actor_obs = self._count_obs_dim(obs, "policy")
         num_critic_obs = self._count_obs_dim(obs, "critic")
-        num_human_fsq_obs = self._count_obs_dim(obs, self.human_fsq_group_name)
-        num_robot_fsq_obs = self._count_obs_dim(obs, self.robot_fsq_group_name)
+        num_actor_human_fsq_obs = self._count_obs_dim(obs, self.actor_human_fsq_group_name)
+        num_actor_robot_fsq_obs = self._count_obs_dim(obs, self.actor_robot_fsq_group_name)
+        num_critic_human_fsq_obs = self._count_obs_dim(obs, self.critic_human_fsq_group_name)
+        num_critic_robot_fsq_obs = self._count_obs_dim(obs, self.critic_robot_fsq_group_name)
 
-        self.dual_fsq = DualFSQAutoEncoder(
-            robot_input_dim=num_robot_fsq_obs,
-            human_input_dim=num_human_fsq_obs,
+        self.actor_dual_fsq = DualFSQAutoEncoder(
+            robot_input_dim=num_actor_robot_fsq_obs,
+            human_input_dim=num_actor_human_fsq_obs,
             latent_dim=latent_dim,
             robot_encoder_hidden_dims=robot_encoder_hidden_dims,
             human_encoder_hidden_dims=human_encoder_hidden_dims,
@@ -82,12 +98,29 @@ class ActorCriticDualFSQ(nn.Module):
             ifsq_boundary_fn=ifsq_boundary_fn,
             ifsq_boundary_scale=ifsq_boundary_scale,
         )
-        print(f"Dual FSQ: {self.dual_fsq}")
+        print(f"Actor Dual FSQ: {self.actor_dual_fsq}")
+
+        self.critic_dual_fsq = DualFSQAutoEncoder(
+            robot_input_dim=num_critic_robot_fsq_obs,
+            human_input_dim=num_critic_human_fsq_obs,
+            latent_dim=latent_dim,
+            robot_encoder_hidden_dims=robot_encoder_hidden_dims,
+            human_encoder_hidden_dims=human_encoder_hidden_dims,
+            decoder_hidden_dims=decoder_hidden_dims,
+            fsq_levels=fsq_levels,
+            activation=activation,
+            quantizer_type=quantizer_type,
+            ifsq_boundary_fn=ifsq_boundary_fn,
+            ifsq_boundary_scale=ifsq_boundary_scale,
+        )
+        print(f"Critic Dual FSQ: {self.critic_dual_fsq}")
 
         self.actor_obs_normalization = actor_obs_normalization
         self.critic_obs_normalization = critic_obs_normalization
-        self.human_fsq_obs_normalization = actor_obs_normalization
-        self.robot_fsq_obs_normalization = critic_obs_normalization
+        self.actor_human_fsq_obs_normalization = actor_obs_normalization
+        self.actor_robot_fsq_obs_normalization = actor_obs_normalization
+        self.critic_human_fsq_obs_normalization = critic_obs_normalization
+        self.critic_robot_fsq_obs_normalization = critic_obs_normalization
 
         self.actor_obs_normalizer = (
             EmpiricalNormalization(num_actor_obs) if actor_obs_normalization else torch.nn.Identity()
@@ -95,24 +128,38 @@ class ActorCriticDualFSQ(nn.Module):
         self.critic_obs_normalizer = (
             EmpiricalNormalization(num_critic_obs) if critic_obs_normalization else torch.nn.Identity()
         )
-        self.human_fsq_obs_normalizer = (
-            EmpiricalNormalization(num_human_fsq_obs) if self.human_fsq_obs_normalization else torch.nn.Identity()
+        self.actor_human_fsq_obs_normalizer = (
+            EmpiricalNormalization(num_actor_human_fsq_obs)
+            if self.actor_human_fsq_obs_normalization
+            else torch.nn.Identity()
         )
-        self.robot_fsq_obs_normalizer = (
-            EmpiricalNormalization(num_robot_fsq_obs) if self.robot_fsq_obs_normalization else torch.nn.Identity()
+        self.actor_robot_fsq_obs_normalizer = (
+            EmpiricalNormalization(num_actor_robot_fsq_obs)
+            if self.actor_robot_fsq_obs_normalization
+            else torch.nn.Identity()
+        )
+        self.critic_human_fsq_obs_normalizer = (
+            EmpiricalNormalization(num_critic_human_fsq_obs)
+            if self.critic_human_fsq_obs_normalization
+            else torch.nn.Identity()
+        )
+        self.critic_robot_fsq_obs_normalizer = (
+            EmpiricalNormalization(num_critic_robot_fsq_obs)
+            if self.critic_robot_fsq_obs_normalization
+            else torch.nn.Identity()
         )
 
         self.state_dependent_std = state_dependent_std
         if self.state_dependent_std:
             self.actor = MLP(
-                num_actor_obs + self.dual_fsq.embedding_dim,
+                num_actor_obs + self.actor_dual_fsq.embedding_dim,
                 [2, num_actions],
                 actor_hidden_dims,
                 activation,
             )
         else:
             self.actor = MLP(
-                num_actor_obs + self.dual_fsq.embedding_dim,
+                num_actor_obs + self.actor_dual_fsq.embedding_dim,
                 num_actions,
                 actor_hidden_dims,
                 activation,
@@ -120,7 +167,7 @@ class ActorCriticDualFSQ(nn.Module):
         print(f"Actor MLP: {self.actor}")
 
         self.critic = MLP(
-            num_critic_obs + self.dual_fsq.embedding_dim,
+            num_critic_obs + self.critic_dual_fsq.embedding_dim,
             1,
             critic_hidden_dims,
             activation,
@@ -208,19 +255,14 @@ class ActorCriticDualFSQ(nn.Module):
                 )
         self.distribution = Normal(mean, std)
 
-    def _compute_dual_fsq_out(self, obs: TensorDict, force: bool = False) -> dict[str, Any]:
-        obs_id = id(obs)
-        if not force and self._dual_fsq_cache_obs_id == obs_id and self._dual_fsq_cache is not None:
-            return self._dual_fsq_cache
-
-        robot_fsq_obs = self.get_robot_fsq_obs_normalized(obs)
-        human_fsq_obs = self.get_human_fsq_obs_normalized(obs)
-        loss, output, terms = self.dual_fsq.compute_loss(
-            robot_fsq_obs,
-            human_fsq_obs,
-            weights=self.dual_fsq_loss_weights,
-        )
-        cache = {
+    def _pack_fsq_out(
+        self,
+        prefix: str,
+        loss: torch.Tensor,
+        output: Any,
+        terms: dict[str, torch.Tensor],
+    ) -> dict[str, Any]:
+        return {
             "loss": loss,
             "terms": terms,
             "output": output,
@@ -232,6 +274,38 @@ class ActorCriticDualFSQ(nn.Module):
             "robot_aux": output.robot_aux,
             "human_aux": output.human_aux,
             "cycle_aux": output.cycle_aux,
+            "prefix": prefix,
+        }
+
+    def _compute_dual_fsq_out(self, obs: TensorDict, force: bool = False) -> dict[str, Any]:
+        obs_id = id(obs)
+        if not force and self._dual_fsq_cache_obs_id == obs_id and self._dual_fsq_cache is not None:
+            return self._dual_fsq_cache
+
+        actor_robot_fsq_obs = self.get_actor_robot_fsq_obs_normalized(obs)
+        actor_human_fsq_obs = self.get_actor_human_fsq_obs_normalized(obs)
+        critic_robot_fsq_obs = self.get_critic_robot_fsq_obs_normalized(obs)
+        critic_human_fsq_obs = self.get_critic_human_fsq_obs_normalized(obs)
+        actor_loss, actor_output, actor_terms = self.actor_dual_fsq.compute_loss(
+            actor_robot_fsq_obs,
+            actor_human_fsq_obs,
+            weights=self.dual_fsq_loss_weights,
+        )
+        critic_loss, critic_output, critic_terms = self.critic_dual_fsq.compute_loss(
+            critic_robot_fsq_obs,
+            critic_human_fsq_obs,
+            weights=self.dual_fsq_loss_weights,
+        )
+        terms = {}
+        for name in actor_terms:
+            terms[name] = 0.5 * (actor_terms[name] + critic_terms[name])
+        cache = {
+            "loss": 0.5 * (actor_loss + critic_loss),
+            "terms": terms,
+            "actor": self._pack_fsq_out("actor", actor_loss, actor_output, actor_terms),
+            "critic": self._pack_fsq_out("critic", critic_loss, critic_output, critic_terms),
+            "q_human": actor_output.q_human,
+            "q_robot": critic_output.q_robot,
         }
         self._dual_fsq_cache_obs_id = obs_id
         self._dual_fsq_cache = cache
@@ -241,13 +315,13 @@ class ActorCriticDualFSQ(nn.Module):
         actor_obs = self.actor_obs_normalizer(self.get_actor_obs(obs))
         if kwargs.get("reconstruct", False):
             fsq_out = self._compute_dual_fsq_out(obs, force=True)
-            actor_latent = fsq_out["q_human"].detach() if self.detach_fsq_latent_in_policy else fsq_out["q_human"]
+            actor_latent = fsq_out["actor"]["q_human"].detach() if self.detach_fsq_latent_in_policy else fsq_out["actor"]["q_human"]
             actor_input = torch.cat((actor_obs, actor_latent), dim=-1)
             self._update_distribution(actor_input)
             return {"action": self.distribution.sample(), "fsq_out": fsq_out}
 
-        human_fsq_obs = self.get_human_fsq_obs_normalized(obs)
-        actor_latent = self.dual_fsq.latent_from_human(
+        human_fsq_obs = self.get_actor_human_fsq_obs_normalized(obs)
+        actor_latent = self.actor_dual_fsq.latent_from_human(
             human_fsq_obs,
             detach=self.detach_fsq_latent_in_policy,
         )
@@ -257,8 +331,8 @@ class ActorCriticDualFSQ(nn.Module):
 
     def act_inference(self, obs: TensorDict, only_action: bool = False) -> torch.Tensor:
         actor_obs = self.actor_obs_normalizer(self.get_actor_obs(obs))
-        human_fsq_obs = self.get_human_fsq_obs_normalized(obs)
-        actor_latent = self.dual_fsq.latent_from_human(
+        human_fsq_obs = self.get_actor_human_fsq_obs_normalized(obs)
+        actor_latent = self.actor_dual_fsq.latent_from_human(
             human_fsq_obs,
             detach=self.detach_fsq_latent_in_policy,
         )
@@ -271,11 +345,11 @@ class ActorCriticDualFSQ(nn.Module):
         critic_obs = self.critic_obs_normalizer(self.get_critic_obs(obs))
         if kwargs.get("reconstruct", False):
             fsq_out = self._compute_dual_fsq_out(obs, force=False)
-            critic_input = torch.cat((critic_obs, fsq_out["q_robot"]), dim=-1)
+            critic_input = torch.cat((critic_obs, fsq_out["critic"]["q_robot"]), dim=-1)
             return {"value": self.critic(critic_input), "fsq_out": fsq_out}
 
-        robot_fsq_obs = self.get_robot_fsq_obs_normalized(obs)
-        critic_latent = self.dual_fsq.latent_from_robot(robot_fsq_obs, detach=False)
+        robot_fsq_obs = self.get_critic_robot_fsq_obs_normalized(obs)
+        critic_latent = self.critic_dual_fsq.latent_from_robot(robot_fsq_obs, detach=False)
         critic_input = torch.cat((critic_obs, critic_latent), dim=-1)
         return self.critic(critic_input)
 
@@ -285,17 +359,29 @@ class ActorCriticDualFSQ(nn.Module):
     def get_critic_obs(self, obs: TensorDict) -> torch.Tensor:
         return self.get_obs(obs, "critic")
 
-    def get_human_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
-        return self.get_obs(obs, self.human_fsq_group_name)
+    def get_actor_human_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
+        return self.get_obs(obs, self.actor_human_fsq_group_name)
 
-    def get_robot_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
-        return self.get_obs(obs, self.robot_fsq_group_name)
+    def get_actor_robot_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
+        return self.get_obs(obs, self.actor_robot_fsq_group_name)
 
-    def get_human_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
-        return self.human_fsq_obs_normalizer(self.get_human_fsq_obs(obs))
+    def get_critic_human_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
+        return self.get_obs(obs, self.critic_human_fsq_group_name)
 
-    def get_robot_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
-        return self.robot_fsq_obs_normalizer(self.get_robot_fsq_obs(obs))
+    def get_critic_robot_fsq_obs(self, obs: TensorDict) -> torch.Tensor:
+        return self.get_obs(obs, self.critic_robot_fsq_group_name)
+
+    def get_actor_human_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        return self.actor_human_fsq_obs_normalizer(self.get_actor_human_fsq_obs(obs))
+
+    def get_actor_robot_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        return self.actor_robot_fsq_obs_normalizer(self.get_actor_robot_fsq_obs(obs))
+
+    def get_critic_human_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        return self.critic_human_fsq_obs_normalizer(self.get_critic_human_fsq_obs(obs))
+
+    def get_critic_robot_fsq_obs_normalized(self, obs: TensorDict) -> torch.Tensor:
+        return self.critic_robot_fsq_obs_normalizer(self.get_critic_robot_fsq_obs(obs))
 
     def get_obs(self, obs: TensorDict, name: str) -> torch.Tensor:
         obs_list = [obs[obs_group] for obs_group in self.obs_groups[name]]
@@ -309,10 +395,14 @@ class ActorCriticDualFSQ(nn.Module):
             self.actor_obs_normalizer.update(self.get_actor_obs(obs))
         if self.critic_obs_normalization:
             self.critic_obs_normalizer.update(self.get_critic_obs(obs))
-        if self.human_fsq_obs_normalization:
-            self.human_fsq_obs_normalizer.update(self.get_human_fsq_obs(obs))
-        if self.robot_fsq_obs_normalization:
-            self.robot_fsq_obs_normalizer.update(self.get_robot_fsq_obs(obs))
+        if self.actor_human_fsq_obs_normalization:
+            self.actor_human_fsq_obs_normalizer.update(self.get_actor_human_fsq_obs(obs))
+        if self.actor_robot_fsq_obs_normalization:
+            self.actor_robot_fsq_obs_normalizer.update(self.get_actor_robot_fsq_obs(obs))
+        if self.critic_human_fsq_obs_normalization:
+            self.critic_human_fsq_obs_normalizer.update(self.get_critic_human_fsq_obs(obs))
+        if self.critic_robot_fsq_obs_normalization:
+            self.critic_robot_fsq_obs_normalizer.update(self.get_critic_robot_fsq_obs(obs))
 
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         super().load_state_dict(state_dict, strict=strict)
@@ -332,13 +422,13 @@ class ActorCriticDualFSQ(nn.Module):
             def __init__(self, actor_critic: ActorCriticDualFSQ, verbose: bool = False):
                 super().__init__()
                 self.verbose = verbose
-                self.actor_input_dim = actor_critic.actor[0].in_features - actor_critic.dual_fsq.embedding_dim
-                self.human_fsq_input_dim = actor_critic.dual_fsq.human_input_dim
-                self.human_encoder = copy.deepcopy(actor_critic.dual_fsq.human_encoder)
-                self.quantizer = copy.deepcopy(actor_critic.dual_fsq.quantizer)
+                self.actor_input_dim = actor_critic.actor[0].in_features - actor_critic.actor_dual_fsq.embedding_dim
+                self.human_fsq_input_dim = actor_critic.actor_dual_fsq.human_input_dim
+                self.human_encoder = copy.deepcopy(actor_critic.actor_dual_fsq.human_encoder)
+                self.quantizer = copy.deepcopy(actor_critic.actor_dual_fsq.quantizer)
                 self.actor = copy.deepcopy(actor_critic.actor)
                 self.actor_obs_normalizer = copy.deepcopy(actor_critic.actor_obs_normalizer)
-                self.human_fsq_obs_normalizer = copy.deepcopy(actor_critic.human_fsq_obs_normalizer)
+                self.human_fsq_obs_normalizer = copy.deepcopy(actor_critic.actor_human_fsq_obs_normalizer)
 
             def forward(self, actor_obs: torch.Tensor, human_fsq_obs: torch.Tensor) -> torch.Tensor:
                 actor_obs = self.actor_obs_normalizer(actor_obs)

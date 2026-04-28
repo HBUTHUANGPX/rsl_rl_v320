@@ -51,6 +51,7 @@ class DualFSQAutoEncoder(nn.Module):
         self,
         robot_input_dim: int,
         human_input_dim: int,
+        target_dim: int | None = None,
         latent_dim: int = 64,
         robot_encoder_hidden_dims: Sequence[int] = (512, 256),
         human_encoder_hidden_dims: Sequence[int] = (512, 256),
@@ -65,6 +66,7 @@ class DualFSQAutoEncoder(nn.Module):
         super().__init__()
         self.robot_input_dim = int(robot_input_dim)
         self.human_input_dim = int(human_input_dim)
+        self.target_dim = int(target_dim) if target_dim is not None else self.robot_input_dim
         self.latent_dim = int(latent_dim)
         self.embedding_dim = self.latent_dim
 
@@ -88,7 +90,7 @@ class DualFSQAutoEncoder(nn.Module):
         )
         self.decoder = MLP(
             self.latent_dim,
-            self.robot_input_dim,
+            self.target_dim,
             list(decoder_hidden_dims),
             activation,
         )
