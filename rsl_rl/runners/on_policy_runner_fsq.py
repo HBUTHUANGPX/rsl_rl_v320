@@ -161,12 +161,15 @@ class OnPolicyRunner:
             )
 
             # Save model
-            if it % self.cfg["save_interval"] == 0:
+            if self.logger.log_dir is not None and not self.logger.disable_logs and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore
-
+                # if self.is_distributed:
+                    # torch.distributed.barrier()
         # Save the final model after training
         if self.logger.log_dir is not None and not self.logger.disable_logs:
             self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
+            # if self.is_distributed:
+                # torch.distributed.barrier()
 
     def save(self, path: str, infos: dict | None = None) -> None:
         # Save model
