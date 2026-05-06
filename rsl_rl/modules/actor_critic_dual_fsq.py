@@ -410,34 +410,67 @@ class ActorCriticDualFSQ(nn.Module):
             def __init__(self, actor_critic: ActorCriticDualFSQ, verbose: bool = False):
                 super().__init__()
                 self.verbose = verbose
-                self.actor_input_dim = actor_critic.actor[0].in_features - actor_critic.actor_dual_fsq.embedding_dim
+                self.actor_input_dim = (
+                    actor_critic.actor[0].in_features
+                    - actor_critic.actor_dual_fsq.embedding_dim
+                )
                 self.human_fsq_input_dim = actor_critic.actor_dual_fsq.human_input_dim
-                self.human_encoder = copy.deepcopy(actor_critic.actor_dual_fsq.human_encoder)
+                self.robot_fsq_input_dim = actor_critic.actor_dual_fsq.robot_input_dim
+                self.human_encoder = copy.deepcopy(
+                    actor_critic.actor_dual_fsq.human_encoder
+                )
+                self.robot_encoder = copy.deepcopy(
+                    actor_critic.actor_dual_fsq.robot_encoder
+                )
                 self.quantizer = copy.deepcopy(actor_critic.actor_dual_fsq.quantizer)
                 self.actor = copy.deepcopy(actor_critic.actor)
-                self.actor_obs_normalizer = copy.deepcopy(actor_critic.actor_obs_normalizer)
-                self.human_fsq_obs_normalizer = copy.deepcopy(actor_critic.actor_human_fsq_obs_normalizer)
+                self.actor_obs_normalizer = copy.deepcopy(
+                    actor_critic.actor_obs_normalizer
+                )
+                self.human_fsq_obs_normalizer = copy.deepcopy(
+                    actor_critic.actor_human_fsq_obs_normalizer
+                )
+                self.robot_fsq_obs_normalizer = copy.deepcopy(
+                    actor_critic.actor_robot_fsq_obs_normalizer
+                )
 
-            def forward(self, actor_obs: torch.Tensor, human_fsq_obs: torch.Tensor) -> torch.Tensor:
+            def forward(
+                self,
+                actor_obs: torch.Tensor,
+                human_fsq_obs: torch.Tensor,
+                robot_fsq_obs: torch.Tensor,
+                selector: torch.Tensor,
+            ) -> torch.Tensor:
                 actor_obs = self.actor_obs_normalizer(actor_obs)
                 human_fsq_obs = self.human_fsq_obs_normalizer(human_fsq_obs)
+                robot_fsq_obs = self.robot_fsq_obs_normalizer(robot_fsq_obs)
                 z_human = self.human_encoder(human_fsq_obs)
+                z_robot = self.robot_encoder(robot_fsq_obs)
                 q_human = self.quantizer(z_human)["z_q"]
-                actor_input = torch.cat((actor_obs, q_human), dim=-1)
+                q_robot = self.quantizer(z_robot)["z_q"]
+                q = q_human * (1 - selector) + q_robot * selector
+                actor_input = torch.cat((actor_obs, q), dim=-1)
                 return self.actor(actor_input)
 
             def export(self, path: str, filename: str) -> None:
                 self.to("cpu")
                 actor_obs = torch.zeros(1, self.actor_input_dim)
                 human_fsq_obs = torch.zeros(1, self.human_fsq_input_dim)
+                robot_fsq_obs = torch.zeros(1, self.robot_fsq_input_dim)
+                selector = torch.zeros(1, 1)
                 torch.onnx.export(
                     self,
-                    (actor_obs, human_fsq_obs),
+                    (actor_obs, human_fsq_obs, robot_fsq_obs, selector),
                     os.path.join(path, filename),
                     export_params=True,
                     opset_version=11,
                     verbose=self.verbose,
-                    input_names=["actor_obs", "human_fsq_obs"],
+                    input_names=[
+                        "actor_obs",
+                        "human_fsq_obs",
+                        "robot_fsq_obs",
+                        "selector",
+                    ],
                     output_names=["actions"],
                     dynamic_axes={},
                 )
