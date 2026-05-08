@@ -450,7 +450,7 @@ class ActorCriticDualFSQ(nn.Module):
                 q_robot = self.quantizer(z_robot)["z_q"]
                 q = q_human * (1 - selector) + q_robot * selector
                 actor_input = torch.cat((actor_obs, q), dim=-1)
-                return self.actor(actor_input)
+                return self.actor(actor_input),q_human,q_robot
 
             def export(self, path: str, filename: str) -> None:
                 self.to("cpu")
@@ -471,7 +471,7 @@ class ActorCriticDualFSQ(nn.Module):
                         "robot_fsq_obs",
                         "selector",
                     ],
-                    output_names=["actions"],
+                    output_names=["actions","q_human","q_robot"],
                     dynamic_axes={},
                 )
 
