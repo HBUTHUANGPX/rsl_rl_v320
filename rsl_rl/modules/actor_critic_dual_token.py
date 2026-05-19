@@ -13,6 +13,9 @@ from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 
+import os
+import copy
+import numpy as np
 
 class ActorCriticDualToken(nn.Module):
     is_recurrent: bool = False
@@ -46,7 +49,8 @@ class ActorCriticDualToken(nn.Module):
 
         num_actor_token = self._count_obs_dim(obs, self.actor_token_group_name)
         num_critic_token = self._count_obs_dim(obs, self.critic_token_group_name)
-
+        self.actor_token_dim = num_actor_token
+        self.critic_token_dim = num_critic_token
         # Actor
         self.state_dependent_std = state_dependent_std
         if self.state_dependent_std:
@@ -219,3 +223,87 @@ class ActorCriticDualToken(nn.Module):
         """
         super().load_state_dict(state_dict, strict=strict)
         return True
+
+    def export_policy_as_onnx(
+            self,
+            env,
+            path: str,
+            filename: str = "policy.onnx",
+            verbose: bool = False,
+    ) -> None:
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+
+        class _OnnxPolicyExporter(torch.nn.Module):
+            def __init__(self, env, actor_critic: ActorCriticDualToken, verbose=False):
+                super().__init__()
+                self.verbose = verbose
+                self.actor_input_dim = actor_critic.actor[0].in_features - actor_critic.actor_token_dim
+                self.actor_token_input_dim = actor_critic.actor_token_dim
+
+                self.actor = copy.deepcopy(actor_critic.actor)
+                self.actor_obs_normalizer = copy.deepcopy(
+                    actor_critic.actor_obs_normalizer
+                )
+
+            def forward(self, actor_obs, actor_token):
+                actor_obs = self.actor_obs_normalizer(actor_obs)
+                obs = torch.cat((actor_obs, actor_token),dim=-1)
+                action =self.actor(obs)
+                return action
+            
+            def export(self, path, filename):
+                self.to("cpu")
+                actor_obs = torch.zeros(
+                    1, self.actor_input_dim
+                )
+                actor_token = torch.zeros(
+                    1, self.actor_token_input_dim
+                )
+                torch.onnx.export(
+                    self,
+                    (actor_obs, actor_token),
+                    os.path.join(path, filename),
+                    export_params=True,
+                    opset_version=11,
+                    verbose=self.verbose,
+                    input_names=["actor_obs", "actor_token"],
+                    output_names=[
+                        "actions"
+                    ],
+                    dynamic_axes={},
+                )
+        exporter = _OnnxPolicyExporter(env, self, verbose)
+        exporter.export(path, filename)
+
+    def _run_onnx_inference(self, session, actor_obs, actor_token):
+        actor_obs = self._to_onnx_input(actor_obs)
+        actor_token = self._to_onnx_input(actor_token)
+        actor_obs_name = session.get_inputs()[0].name
+        actor_token_name = session.get_inputs()[1].name
+        (
+            actions
+        ) = session.run(
+            None,
+            {
+                actor_obs_name: actor_obs,
+                actor_token_name: actor_token,
+            },
+        )
+        return actions
+    
+    def _onnx_policy_reasoning(self, obs, onnx_policy):
+        (
+            act
+        ) = self._run_onnx_inference(
+            onnx_policy, self.get_actor_obs(obs)[0:1, :], self.get_actor_token(obs)[0:1, :]
+        )
+        return act[0]
+    
+    def _to_onnx_input(self, value, expected_rank: int = 2):
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        value = np.asarray(value, dtype=np.float32)
+        if expected_rank == 2 and value.ndim == 1:
+            value = value[None, :]
+        return value
