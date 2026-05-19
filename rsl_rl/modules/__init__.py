@@ -18,6 +18,7 @@ from .actor_critic_cvae import ActorCritic_CVAE
 from .fsq import FSQQuantizer
 from .actor_critic_fsq_cvae import ActorCritic_FSQ_CVAE
 from .actor_critic_dual_fsq import ActorCriticDualFSQ
+from .actor_critic_dual_token import ActorCriticDualToken
 from .actor_critic_single_fsq import ActorCriticSingleFSQ
 from .actor_critic_single_fsq_distillation import ActorCriticSingleFSQDistillation
 from .vqvae import FrameFSQVAE
@@ -32,6 +33,7 @@ from .fsq_components import (
 __all__ = [
     "ActorCritic",
     "ActorCriticDualFSQ",
+    "ActorCriticDualToken",
     "ActorCriticSingleFSQ",
     "ActorCriticSingleFSQDistillation",
     "ActorCriticCNN",
